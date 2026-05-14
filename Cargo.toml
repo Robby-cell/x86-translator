@@ -1,0 +1,19 @@
+[package]
+name = "x86-translator"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = ["full"]
+
+full = ["encoder", "disassembler"]
+
+encoder = ["dep:nom", "iced-x86/code_asm", "iced-x86/encoder"]
+disassembler = ["iced-x86/decoder", "iced-x86/intel"]
+
+[dependencies]
+iced-x86 = { version = "1.21.0", default-features = false, features = [
+    "std",
+    "lazy_static",
+] }
+nom = { version = "8.0", optional = true }

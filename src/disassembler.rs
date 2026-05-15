@@ -1,4 +1,3 @@
-#![cfg(feature = "disassembler")]
 use crate::error::DecodeError;
 use crate::options::DisassemblerOptions;
 use iced_x86::{Decoder as IcedDecoder, DecoderOptions, Formatter, IntelFormatter};

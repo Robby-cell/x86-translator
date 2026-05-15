@@ -3,7 +3,7 @@ use crate::prelude::{assemble, disassemble};
 #[test]
 fn test_roundtrip_data_processing() {
     let code = "mov eax, 1\nadd rax, rbx\ncmp rcx, rdx\nret";
-    let bytes = assemble(code).unwrap();
+    let bytes = assemble(code).unwrap().bytes;
     let insts = disassemble(&bytes).unwrap();
 
     assert_eq!(insts[0], "mov     eax,1");
@@ -15,7 +15,7 @@ fn test_roundtrip_data_processing() {
 #[test]
 fn test_roundtrip_memory_and_stack() {
     let code = "push rax\nlea rax, [rbx+0x10]\npop rax";
-    let bytes = assemble(code).unwrap();
+    let bytes = assemble(code).unwrap().bytes;
     let insts = disassemble(&bytes).unwrap();
 
     assert_eq!(insts[0], "push    rax");
@@ -33,7 +33,7 @@ fn test_real_loop_example() {
                 cmp ecx, 0
                 jmp loop_start
             "#;
-    let bytes = assemble(source).unwrap();
+    let bytes = assemble(source).unwrap().bytes;
     let insts = disassemble(&bytes).unwrap();
 
     assert_eq!(insts.len(), 5);

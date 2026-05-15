@@ -8,7 +8,9 @@ fn test_hashmap_resolver() {
         ..AssemblerOptions::default()
     };
 
-    let bytes = assemble_with_options("jmp external_jmp", options).unwrap();
+    let bytes = assemble_with_options("jmp external_jmp", options)
+        .unwrap()
+        .bytes;
     assert_eq!(bytes, vec![0xE9, 0xFB, 0x0F, 0x00, 0x00]);
 }
 
@@ -27,6 +29,6 @@ fn test_fn_resolver_mutability() {
         ..AssemblerOptions::default()
     };
 
-    let bytes = assemble_with_options("call printf", options).unwrap();
+    let bytes = assemble_with_options("call printf", options).unwrap().bytes;
     assert_eq!(bytes[0], 0xE8);
 }

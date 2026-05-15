@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Reg {
     Al,
@@ -81,4 +83,14 @@ pub struct Statement {
     pub mnemonic: Mnemonic,
     pub operands: Vec<Operand>,
     pub line: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct AssembleResult {
+    pub bytes: Vec<u8>,
+    pub entry_point: u64,
+    /// Maps a label/function name to its exact physical byte address (IP)
+    pub labels: HashMap<String, u64>, 
+    /// Total number of physical instructions and data directives emitted
+    pub instruction_count: usize,       
 }

@@ -5,12 +5,14 @@ use crate::symbols;
 use crate::types::AssembleResult;
 
 mod basic;
+mod conditionals;
 mod control_flow;
 mod data_processing;
 mod directives;
 mod memory;
 mod resolvers;
 mod stack;
+mod system;
 
 pub(crate) fn assemble_64_bit(code: &str) -> Result<AssembleResult, AsmError> {
     Assembler::new().bitness(64).assemble(code)

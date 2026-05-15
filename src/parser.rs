@@ -251,6 +251,42 @@ fn parse_cond(s: &str) -> Option<Condition> {
     }
 }
 
+fn string_literal(input: &str) -> IResult<&str, String> {
+    let (input, _) = char('"')(input)?;
+    let mut out = String::new();
+    let mut chars = input.chars();
+    let mut rest;
+
+    while let Some(c) = chars.next() {
+        rest = chars.as_str();
+        if c == '"' {
+            return Ok((rest, out));
+        }
+        if c == '\\' {
+            if let Some(nc) = chars.next() {
+                match nc {
+                    'n' => out.push('\n'),
+                    'r' => out.push('\r'),
+                    't' => out.push('\t'),
+                    '\\' => out.push('\\'),
+                    '"' => out.push('"'),
+                    '0' => out.push('\0'),
+                    _ => {
+                        out.push('\\');
+                        out.push(nc);
+                    }
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    Err(nom::Err::Error(nom::error::Error::new(
+        input,
+        nom::error::ErrorKind::Tag,
+    )))
+}
+
 fn mnemonic_parser(input: &str) -> IResult<&str, Mnemonic> {
     let (rest, token) = take_while1(|c: char| c.is_alphabetic())(input)?;
     let lower = token.to_lowercase();
@@ -278,6 +314,8 @@ fn mnemonic_parser(input: &str) -> IResult<&str, Mnemonic> {
         "mov" => Mnemonic::Mov,
         "add" => Mnemonic::Add,
         "sub" => Mnemonic::Sub,
+        "adc" => Mnemonic::Adc,
+        "sbb" => Mnemonic::Sbb,
         "cmp" => Mnemonic::Cmp,
         "test" => Mnemonic::Test,
         "and" => Mnemonic::And,
@@ -293,6 +331,8 @@ fn mnemonic_parser(input: &str) -> IResult<&str, Mnemonic> {
         "pop" => Mnemonic::Pop,
         "nop" => Mnemonic::Nop,
         "ret" => Mnemonic::Ret,
+        "hlt" => Mnemonic::Hlt,
+        "int" => Mnemonic::Int,
         _ => {
             return Err(nom::Err::Error(nom::error::Error::new(
                 input,
@@ -329,6 +369,7 @@ pub fn parse_statement(input: &str, line: usize) -> Result<Statement, AsmError> 
         });
     }
 
+    // Directives
     if let Ok((dir_rest, _)) = char::<&str, nom::error::Error<&str>>('.').parse(rest) {
         let (dir_rest, dir_name) =
             take_while1::<_, _, nom::error::Error<&str>>(|c: char| c.is_alphabetic())(dir_rest)
@@ -343,6 +384,9 @@ pub fn parse_statement(input: &str, line: usize) -> Result<Statement, AsmError> 
             "text" => Mnemonic::Text,
             "data" => Mnemonic::Data,
             "global" => Mnemonic::Global,
+            "align" => Mnemonic::Align,
+            "ascii" => Mnemonic::Ascii,
+            "asciz" | "string" => Mnemonic::Asciz,
             _ => {
                 return Err(AsmError::UnknownMnemonic {
                     line,
@@ -358,6 +402,17 @@ pub fn parse_statement(input: &str, line: usize) -> Result<Statement, AsmError> 
             if let Ok((next, lbl)) = label_name(curr) {
                 operands.push(Operand::Label(lbl));
                 curr = next;
+            }
+        } else if mnem == Mnemonic::Ascii || mnem == Mnemonic::Asciz {
+            if let Ok((next, string_val)) = string_literal(curr) {
+                operands.push(Operand::StringBytes(string_val.into_bytes()));
+                curr = next;
+            } else {
+                return Err(AsmError::ParseError {
+                    line,
+                    col: 0,
+                    message: "Expected string literal".into(),
+                });
             }
         } else if mnem != Mnemonic::Text && mnem != Mnemonic::Data {
             let (next, op_opt) = opt(immediate).parse(curr).unwrap();

@@ -77,7 +77,9 @@ pub enum Condition {
 pub enum Mnemonic {
     Mov,
     Add,
+    Adc,
     Sub,
+    Sbb,
     Cmp,
     Test,
     And,
@@ -97,6 +99,8 @@ pub enum Mnemonic {
     Pop,
     Nop,
     Ret,
+    Hlt,
+    Int,
     Global,
     Text,
     Data,

@@ -149,7 +149,7 @@ pub fn translate_instruction(
             if let Some(Operand::StringBytes(bytes)) = stmt.operands.get(0) {
                 asm.db(bytes).map_err(to_err)?;
                 if stmt.mnemonic == Mnemonic::Asciz {
-                    asm.db(&[0u8]).map_err(to_err)?; // Null terminator for asciz
+                    asm.db(&[0u8]).map_err(to_err)?; // Null terminator
                 }
             }
             Ok(())
@@ -181,6 +181,14 @@ pub fn translate_instruction(
         }
         Mnemonic::Nop => asm.nop().map_err(to_err),
         Mnemonic::Ret => asm.ret().map_err(to_err),
+
+        Mnemonic::Hlt => asm.hlt().map_err(to_err),
+        Mnemonic::Int => {
+            if let Some(Operand::Imm(i)) = stmt.operands.get(0) {
+                asm.int(*i as i32).map_err(to_err)?;
+            }
+            Ok(())
+        }
 
         Mnemonic::Jmp | Mnemonic::Jcc(_) | Mnemonic::Call => {
             if let Some(Operand::Label(lbl)) = stmt.operands.get(0) {
@@ -615,6 +623,11 @@ pub fn translate_instruction(
                         asm.test(reg1, reg2).map_err(to_err)?;
                     } else if let (Some(reg1), Some(reg2)) = (to_reg64(*r1), to_reg64(*r2)) {
                         asm.test(reg1, reg2).map_err(to_err)?;
+                    } else {
+                        return Err(AsmError::EncodeError {
+                            line: stmt.line,
+                            message: "Register size mismatch".into(),
+                        });
                     }
                 }
                 (Operand::Reg(r1), Operand::Imm(i)) => {
@@ -635,7 +648,6 @@ pub fn translate_instruction(
                     },
                 ) => {
                     let mem = build_mem(*size, *base, *index, *scale, *disp);
-                    // Test is communicative, but iced-x86 only provides test(mem, reg)
                     if let Some(reg) = to_reg64(*r1) {
                         asm.test(mem, reg).map_err(to_err)?;
                     } else if let Some(reg) = to_reg32(*r1) {
@@ -685,7 +697,7 @@ pub fn translate_instruction(
                 _ => {
                     return Err(AsmError::EncodeError {
                         line: stmt.line,
-                        message: "Unsupported test pairing".into(),
+                        message: "Unsupported operand pairing".into(),
                     });
                 }
             }
@@ -693,7 +705,9 @@ pub fn translate_instruction(
         }
 
         op @ (Mnemonic::Add
+        | Mnemonic::Adc
         | Mnemonic::Sub
+        | Mnemonic::Sbb
         | Mnemonic::Cmp
         | Mnemonic::And
         | Mnemonic::Or
@@ -790,7 +804,9 @@ pub fn translate_instruction(
             }
             match op {
                 Mnemonic::Add => math_op!(add),
+                Mnemonic::Adc => math_op!(adc),
                 Mnemonic::Sub => math_op!(sub),
+                Mnemonic::Sbb => math_op!(sbb),
                 Mnemonic::Cmp => math_op!(cmp),
                 Mnemonic::And => math_op!(and),
                 Mnemonic::Or => math_op!(or),

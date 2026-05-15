@@ -59,3 +59,41 @@ fn test_lea_expr() {
     let bytes = assemble("lea eax, [ebx + ecx]").unwrap().bytes;
     assert_eq!(bytes, vec![0x8D, 0x04, 0x0B]);
 }
+
+#[test]
+fn test_arithmetic_extended() {
+    // adc eax, ebx
+    let bytes = assemble("adc eax, ebx").unwrap().bytes;
+    assert_eq!(bytes, vec![0x11, 0xD8]);
+
+    // sbb ecx, 1
+    let bytes = assemble("sbb ecx, 1").unwrap().bytes;
+    assert_eq!(bytes, vec![0x83, 0xD9, 0x01]);
+
+    // mul ebx
+    let bytes = assemble("mul ebx").unwrap().bytes;
+    assert_eq!(bytes, vec![0xF7, 0xE3]);
+
+    // div rcx
+    let bytes = assemble_64_bit("div rcx").unwrap().bytes;
+    assert_eq!(bytes, vec![0x48, 0xF7, 0xF1]);
+}
+
+#[test]
+fn test_bitwise() {
+    // and eax, ebx
+    let bytes = assemble("and eax, ebx").unwrap().bytes;
+    assert_eq!(bytes, vec![0x21, 0xD8]);
+
+    // or ecx, 0x10
+    let bytes = assemble("or ecx, 0x10").unwrap().bytes;
+    assert_eq!(bytes, vec![0x83, 0xC9, 0x10]);
+
+    // xor eax, eax (Standard way to clear register)
+    let bytes = assemble("xor eax, eax").unwrap().bytes;
+    assert_eq!(bytes, vec![0x31, 0xC0]);
+
+    // test eax, eax
+    let bytes = assemble("test eax, eax").unwrap().bytes;
+    assert_eq!(bytes, vec![0x85, 0xC0]);
+}

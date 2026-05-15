@@ -2,7 +2,7 @@ use crate::encoder::translate_instruction;
 use crate::error::AsmError;
 use crate::parser::parse_statement;
 use crate::resolver::{NoSymbolResolver, SymbolResolver};
-use crate::types::{AssembleResult, Mnemonic, Operand};
+use crate::types::AssembleResult;
 
 use iced_x86::BlockEncoderOptions;
 use iced_x86::code_asm::{CodeAssembler, CodeLabel};
@@ -38,7 +38,7 @@ impl<'a> Assembler<'a> {
         self
     }
 
-    pub fn assemble(self, source: &str) -> Result<AssembleResult, AsmError> {
+    pub fn assemble(mut self, source: &str) -> Result<AssembleResult, AsmError> {
         let mut statements = Vec::new();
 
         for (line_idx, raw_line) in source.lines().enumerate() {
@@ -58,93 +58,103 @@ impl<'a> Assembler<'a> {
             statements.push(parse_statement(code_part, line_num)?);
         }
 
-        // First Pass (Label Estimate)
         let mut estimated_labels: HashMap<String, i64> = HashMap::new();
-        let mut current_offset = 0;
-
+        // Pre-seed all labels with 0 so expressions can evaluate safely on pass 1
         for stmt in &statements {
             if let Some(lbl) = &stmt.label {
-                estimated_labels.insert(lbl.clone(), current_offset);
+                estimated_labels.insert(lbl.clone(), 0);
             }
-            let size = match stmt.mnemonic {
-                Mnemonic::Byte => 1,
-                Mnemonic::Short => 2,
-                Mnemonic::Word => 4,
-                Mnemonic::Ascii => {
-                    if let Some(Operand::StringBytes(b)) = stmt.operands.get(0) {
-                        b.len() as i64
-                    } else {
-                        0
-                    }
-                }
-                Mnemonic::Asciz => {
-                    if let Some(Operand::StringBytes(b)) = stmt.operands.get(0) {
-                        b.len() as i64 + 1
-                    } else {
-                        0
-                    }
-                }
-                Mnemonic::Space => {
-                    if let Some(Operand::Expr(e)) = stmt.operands.get(0) {
-                        crate::encoder::eval_expr(
-                            e,
-                            &estimated_labels,
-                            &mut crate::resolver::NoSymbolResolver,
-                            self.start_address,
-                        )
-                        .unwrap_or(0)
-                    } else {
-                        0
-                    }
-                }
-                Mnemonic::LabelOnly
-                | Mnemonic::Global
-                | Mnemonic::Text
-                | Mnemonic::Data
-                | Mnemonic::Align => 0,
-                _ => 3,
-            };
-            current_offset += size;
         }
 
-        let mut asm = CodeAssembler::new(self.bitness).unwrap();
-        let mut code_labels: HashMap<String, CodeLabel> = HashMap::new();
+        let mut final_asm_result = None;
+        let mut final_code_labels = HashMap::new();
+        let mut instruction_count = 0;
+        let mut last_error = None;
 
-        let mut dummy_resolver = NoSymbolResolver;
-        let resolver = self.resolver.unwrap_or(&mut dummy_resolver);
+        for _ in 0..5 {
+            // Allow up to 5 passes for instruction sizes to settle
+            let mut asm = CodeAssembler::new(self.bitness).unwrap();
+            let mut code_labels: HashMap<String, CodeLabel> = HashMap::new();
+            let mut pass_failed = false;
 
-        for stmt in &statements {
-            if let Some(lbl_name) = &stmt.label {
-                let mut code_label = *code_labels
-                    .entry(lbl_name.clone())
-                    .or_insert_with(|| asm.create_label());
-                asm.set_label(&mut code_label)
-                    .map_err(|e| AsmError::EncodeError {
-                        line: stmt.line,
-                        message: e.to_string(),
-                    })?;
-                code_labels.insert(lbl_name.clone(), code_label);
+            for stmt in &statements {
+                if let Some(lbl_name) = &stmt.label {
+                    let mut code_label = *code_labels
+                        .entry(lbl_name.clone())
+                        .or_insert_with(|| asm.create_label());
+                    if let Err(e) = asm.set_label(&mut code_label) {
+                        last_error = Some(AsmError::EncodeError {
+                            line: stmt.line,
+                            message: e.to_string(),
+                        });
+                        pass_failed = true;
+                        break;
+                    }
+                    code_labels.insert(lbl_name.clone(), code_label);
+                }
+
+                let mut dummy_resolver = NoSymbolResolver;
+                let resolver: &mut dyn SymbolResolver = match &mut self.resolver {
+                    Some(r) => &mut **r,
+                    None => &mut dummy_resolver,
+                };
+
+                if let Err(e) = translate_instruction(
+                    &mut asm,
+                    stmt,
+                    &mut code_labels,
+                    &estimated_labels,
+                    resolver,
+                    self.start_address,
+                ) {
+                    last_error = Some(e);
+                    pass_failed = true;
+                    break;
+                }
             }
-            translate_instruction(
-                &mut asm,
-                stmt,
-                &mut code_labels,
-                &estimated_labels,
-                resolver,
+
+            if pass_failed {
+                break;
+            }
+
+            instruction_count = asm.instructions().len();
+            match asm.assemble_options(
                 self.start_address,
-            )?;
+                BlockEncoderOptions::RETURN_NEW_INSTRUCTION_OFFSETS,
+            ) {
+                Ok(asm_result) => {
+                    let mut changed = false;
+                    for (name, label) in &code_labels {
+                        if let Ok(ip) = asm_result.label_ip(label) {
+                            let offset = (ip - self.start_address) as i64;
+                            if estimated_labels.get(name) != Some(&offset) {
+                                estimated_labels.insert(name.clone(), offset);
+                                changed = true;
+                            }
+                        }
+                    }
+
+                    final_asm_result = Some(asm_result);
+                    final_code_labels = code_labels;
+
+                    if !changed {
+                        break; // Converged
+                    }
+                }
+                Err(e) => {
+                    last_error = Some(AsmError::EncodeError {
+                        line: 0,
+                        message: format!("Link/Assemble Failed: {}", e),
+                    });
+                    break;
+                }
+            }
         }
 
-        let instruction_count = asm.instructions().len();
-        let result = asm.assemble_options(
-            self.start_address,
-            BlockEncoderOptions::RETURN_NEW_INSTRUCTION_OFFSETS,
-        );
-
-        match result {
-            Ok(asm_result) => {
+        match final_asm_result {
+            Some(asm_result) => {
                 let mut exported_labels = HashMap::new();
-                for (name, label) in code_labels {
+                for (name, label) in final_code_labels {
                     if let Ok(ip) = asm_result.label_ip(&label) {
                         exported_labels.insert(name, ip);
                     }
@@ -157,10 +167,10 @@ impl<'a> Assembler<'a> {
                     instruction_count,
                 })
             }
-            Err(e) => Err(AsmError::EncodeError {
+            None => Err(last_error.unwrap_or(AsmError::EncodeError {
                 line: 0,
-                message: format!("Link/Assemble Failed: {}", e),
-            }),
+                message: "Assembly failed to converge".into(),
+            })),
         }
     }
 }

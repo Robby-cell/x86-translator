@@ -1,5 +1,6 @@
+use crate::assembler::Assembler;
 use crate::error::AsmError;
-use crate::prelude::{AssemblerOptions, FnSymbolResolver, assemble, assemble_with_options};
+use crate::prelude::{FnSymbolResolver, assemble};
 use crate::symbols;
 use crate::types::AssembleResult;
 
@@ -12,13 +13,7 @@ mod resolvers;
 mod stack;
 
 pub(crate) fn assemble_64_bit(code: &str) -> Result<AssembleResult, AsmError> {
-    assemble_with_options(
-        code,
-        AssemblerOptions {
-            bitness: 64,
-            ..Default::default()
-        },
-    )
+    Assembler::new().bitness(64).assemble(code)
 }
 
 #[test]

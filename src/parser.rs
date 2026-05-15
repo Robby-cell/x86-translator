@@ -5,7 +5,7 @@ use nom::{
     branch::alt,
     bytes::complete::{tag_no_case, take_while, take_while1},
     character::complete::{char, digit1, hex_digit1, space0},
-    combinator::{map, map_res, opt, recognize, value},
+    combinator::{map, map_res, opt, recognize},
     sequence::{preceded, terminated},
 };
 
@@ -32,6 +32,14 @@ fn register(input: &str) -> IResult<&str, Reg> {
         "ebp" => Reg::Ebp,
         "esi" => Reg::Esi,
         "edi" => Reg::Edi,
+        "r8d" => Reg::R8d,
+        "r9d" => Reg::R9d,
+        "r10d" => Reg::R10d,
+        "r11d" => Reg::R11d,
+        "r12d" => Reg::R12d,
+        "r13d" => Reg::R13d,
+        "r14d" => Reg::R14d,
+        "r15d" => Reg::R15d,
         "rax" => Reg::Rax,
         "rcx" => Reg::Rcx,
         "rdx" => Reg::Rdx,
@@ -40,6 +48,14 @@ fn register(input: &str) -> IResult<&str, Reg> {
         "rbp" => Reg::Rbp,
         "rsi" => Reg::Rsi,
         "rdi" => Reg::Rdi,
+        "r8" => Reg::R8,
+        "r9" => Reg::R9,
+        "r10" => Reg::R10,
+        "r11" => Reg::R11,
+        "r12" => Reg::R12,
+        "r13" => Reg::R13,
+        "r14" => Reg::R14,
+        "r15" => Reg::R15,
         _ => {
             return Err(nom::Err::Error(nom::error::Error::new(
                 input,
@@ -118,13 +134,21 @@ fn mem_term(input: &str) -> IResult<&str, MemTerm> {
 }
 
 fn memory(input: &str) -> IResult<&str, Operand> {
-    let (input, _) = opt(alt((
+    let (input, size_str) = opt(alt((
         tag_no_case("qword ptr "),
         tag_no_case("dword ptr "),
         tag_no_case("word ptr "),
         tag_no_case("byte ptr "),
     )))
     .parse(input)?;
+    let size = match size_str.map(|s| s.to_lowercase()) {
+        Some(s) if s.starts_with("qword") => MemorySize::Qword,
+        Some(s) if s.starts_with("dword") => MemorySize::Dword,
+        Some(s) if s.starts_with("word") => MemorySize::Word,
+        Some(s) if s.starts_with("byte") => MemorySize::Byte,
+        _ => MemorySize::Unspecified,
+    };
+
     let (mut curr, _) = (char('['), sp).parse(input)?;
 
     let mut base = None;
@@ -149,7 +173,6 @@ fn memory(input: &str) -> IResult<&str, Operand> {
 
         let (rest, _) = sp(rest)?;
         let is_neg = sign == Some('-');
-
         let (rest, term) = mem_term(rest)?;
         curr = rest;
 
@@ -181,13 +204,13 @@ fn memory(input: &str) -> IResult<&str, Operand> {
                 disp += if is_neg { -d } else { d };
             }
         }
-
         first = false;
     }
 
     Ok((
         curr,
         Operand::Memory {
+            size,
             base,
             index,
             scale,
@@ -206,28 +229,78 @@ fn operand(input: &str) -> IResult<&str, Operand> {
     .parse(input)
 }
 
+fn parse_cond(s: &str) -> Option<Condition> {
+    match s {
+        "o" => Some(Condition::O),
+        "no" => Some(Condition::No),
+        "b" | "c" | "nae" => Some(Condition::B),
+        "ae" | "nb" | "nc" => Some(Condition::Ae),
+        "e" | "z" => Some(Condition::E),
+        "ne" | "nz" => Some(Condition::Ne),
+        "be" | "na" => Some(Condition::Be),
+        "a" | "nbe" => Some(Condition::A),
+        "s" => Some(Condition::S),
+        "ns" => Some(Condition::Ns),
+        "p" | "pe" => Some(Condition::P),
+        "np" | "po" => Some(Condition::Np),
+        "l" | "nge" => Some(Condition::L),
+        "ge" | "nl" => Some(Condition::Ge),
+        "le" | "ng" => Some(Condition::Le),
+        "g" | "nle" => Some(Condition::G),
+        _ => None,
+    }
+}
+
 fn mnemonic_parser(input: &str) -> IResult<&str, Mnemonic> {
-    alt((
-        value(Mnemonic::Mov, tag_no_case("mov")),
-        value(Mnemonic::Add, tag_no_case("add")),
-        value(Mnemonic::Sub, tag_no_case("sub")),
-        value(Mnemonic::Cmp, tag_no_case("cmp")),
-        value(Mnemonic::And, tag_no_case("and")),
-        value(Mnemonic::Or, tag_no_case("or")),
-        value(Mnemonic::Xor, tag_no_case("xor")),
-        value(Mnemonic::Jmp, tag_no_case("jmp")),
-        value(Mnemonic::Call, tag_no_case("call")),
-        value(Mnemonic::Push, tag_no_case("push")),
-        value(Mnemonic::Pop, tag_no_case("pop")),
-        value(Mnemonic::Nop, tag_no_case("nop")),
-        value(Mnemonic::Ret, tag_no_case("ret")),
-        value(Mnemonic::Lea, tag_no_case("lea")),
-        value(Mnemonic::Mul, tag_no_case("mul")),
-        value(Mnemonic::Div, tag_no_case("div")),
-        value(Mnemonic::Inc, tag_no_case("inc")),
-        value(Mnemonic::Dec, tag_no_case("dec")),
-    ))
-    .parse(input)
+    let (rest, token) = take_while1(|c: char| c.is_alphabetic())(input)?;
+    let lower = token.to_lowercase();
+
+    if let Some(cond_str) = lower.strip_prefix("j") {
+        if cond_str == "mp" {
+            return Ok((rest, Mnemonic::Jmp));
+        }
+        if let Some(cond) = parse_cond(cond_str) {
+            return Ok((rest, Mnemonic::Jcc(cond)));
+        }
+    }
+    if let Some(cond_str) = lower.strip_prefix("cmov") {
+        if let Some(cond) = parse_cond(cond_str) {
+            return Ok((rest, Mnemonic::Cmov(cond)));
+        }
+    }
+    if let Some(cond_str) = lower.strip_prefix("set") {
+        if let Some(cond) = parse_cond(cond_str) {
+            return Ok((rest, Mnemonic::Set(cond)));
+        }
+    }
+
+    let mnem = match lower.as_str() {
+        "mov" => Mnemonic::Mov,
+        "add" => Mnemonic::Add,
+        "sub" => Mnemonic::Sub,
+        "cmp" => Mnemonic::Cmp,
+        "test" => Mnemonic::Test,
+        "and" => Mnemonic::And,
+        "or" => Mnemonic::Or,
+        "xor" => Mnemonic::Xor,
+        "lea" => Mnemonic::Lea,
+        "mul" => Mnemonic::Mul,
+        "div" => Mnemonic::Div,
+        "inc" => Mnemonic::Inc,
+        "dec" => Mnemonic::Dec,
+        "call" => Mnemonic::Call,
+        "push" => Mnemonic::Push,
+        "pop" => Mnemonic::Pop,
+        "nop" => Mnemonic::Nop,
+        "ret" => Mnemonic::Ret,
+        _ => {
+            return Err(nom::Err::Error(nom::error::Error::new(
+                input,
+                nom::error::ErrorKind::Tag,
+            )));
+        }
+    };
+    Ok((rest, mnem))
 }
 
 pub fn parse_statement(input: &str, line: usize) -> Result<Statement, AsmError> {
@@ -256,7 +329,6 @@ pub fn parse_statement(input: &str, line: usize) -> Result<Statement, AsmError> 
         });
     }
 
-    // Directives Parsing
     if let Ok((dir_rest, _)) = char::<&str, nom::error::Error<&str>>('.').parse(rest) {
         let (dir_rest, dir_name) =
             take_while1::<_, _, nom::error::Error<&str>>(|c: char| c.is_alphabetic())(dir_rest)
@@ -282,7 +354,6 @@ pub fn parse_statement(input: &str, line: usize) -> Result<Statement, AsmError> 
         let mut operands = vec![];
         let mut curr = dir_rest;
 
-        // Parse operands depending on the directive type
         if mnem == Mnemonic::Global {
             if let Ok((next, lbl)) = label_name(curr) {
                 operands.push(Operand::Label(lbl));
@@ -304,7 +375,6 @@ pub fn parse_statement(input: &str, line: usize) -> Result<Statement, AsmError> 
                 message: format!("Unexpected trailing characters: '{}'", curr),
             });
         }
-
         return Ok(Statement {
             label,
             mnemonic: mnem,
@@ -341,7 +411,6 @@ pub fn parse_statement(input: &str, line: usize) -> Result<Statement, AsmError> 
         }
     }
 
-    // STRICT CHECK: Ensure the line was fully consumed
     let (curr, _) = sp(curr).unwrap();
     if !curr.is_empty() {
         return Err(AsmError::ParseError {
@@ -350,7 +419,6 @@ pub fn parse_statement(input: &str, line: usize) -> Result<Statement, AsmError> 
             message: format!("Unexpected trailing characters: '{}'", curr),
         });
     }
-
     Ok(Statement {
         label,
         mnemonic,

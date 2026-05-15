@@ -1,16 +1,7 @@
-use crate::{
-    error::DecodeError,
-    prelude::{DisassemblerOptions, disassemble, disassemble_with_options},
-};
+use crate::{disassembler::Disassembler, error::DecodeError, prelude::disassemble};
 
 pub(crate) fn disassemble_64_bit(bytes: &[u8]) -> Result<Vec<String>, DecodeError> {
-    disassemble_with_options(
-        bytes,
-        DisassemblerOptions {
-            bitness: 64,
-            ..Default::default()
-        },
-    )
+    Disassembler::new().bitness(64).disassemble(bytes)
 }
 
 #[test]
@@ -36,13 +27,11 @@ fn test_disassemble_memory() {
 
 #[test]
 fn test_disassemble_offset() {
-    let options = DisassemblerOptions {
-        start_address: 0x1000,
-        ..DisassemblerOptions::default()
-    };
-
     let bytes = [0xE8, 0x00, 0x00, 0x00, 0x00];
-    let insts = disassemble_with_options(&bytes, options).unwrap();
+    let insts = Disassembler::new()
+        .start_address(0x1000)
+        .disassemble(&bytes)
+        .unwrap();
 
     // Expected padded offset string mapping from iced
     assert_eq!(insts[0], "call    00001005h");

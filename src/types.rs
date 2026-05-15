@@ -18,6 +18,14 @@ pub enum Reg {
     Ebp,
     Esi,
     Edi,
+    R8d,
+    R9d,
+    R10d,
+    R11d,
+    R12d,
+    R13d,
+    R14d,
+    R15d,
     Rax,
     Rcx,
     Rdx,
@@ -26,6 +34,43 @@ pub enum Reg {
     Rbp,
     Rsi,
     Rdi,
+    R8,
+    R9,
+    R10,
+    R11,
+    R12,
+    R13,
+    R14,
+    R15,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum MemorySize {
+    Unspecified,
+    Byte,
+    Word,
+    Dword,
+    Qword,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Condition {
+    O,
+    No,
+    B,
+    Ae,
+    E,
+    Ne,
+    Be,
+    A,
+    S,
+    Ns,
+    P,
+    Np,
+    L,
+    Ge,
+    Le,
+    G,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -34,20 +79,24 @@ pub enum Mnemonic {
     Add,
     Sub,
     Cmp,
+    Test,
     And,
     Or,
     Xor,
-    Jmp,
-    Call,
-    Push,
-    Pop,
-    Nop,
-    Ret,
     Mul,
     Div,
     Lea,
     Inc,
     Dec,
+    Jmp,
+    Jcc(Condition),
+    Cmov(Condition),
+    Set(Condition),
+    Call,
+    Push,
+    Pop,
+    Nop,
+    Ret,
     Global,
     Text,
     Data,
@@ -72,6 +121,7 @@ pub enum Operand {
     Reg(Reg),
     Imm(i64),
     Memory {
+        size: MemorySize,
         base: Option<Reg>,
         index: Option<Reg>,
         scale: u32,
@@ -94,10 +144,6 @@ pub struct Statement {
 pub struct AssembleResult {
     pub bytes: Vec<u8>,
     pub entry_point: u64,
-
-    /// Maps a label/function name to its exact physical byte address (IP)
     pub labels: HashMap<String, u64>,
-
-    /// Total number of physical instructions and data directives emitted
     pub instruction_count: usize,
 }

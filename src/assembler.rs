@@ -1,28 +1,48 @@
 use crate::encoder::translate_instruction;
 use crate::error::AsmError;
-use crate::options::AssemblerOptions;
 use crate::parser::parse_statement;
+use crate::resolver::{NoSymbolResolver, SymbolResolver};
 use crate::types::AssembleResult;
+
 use iced_x86::BlockEncoderOptions;
 use iced_x86::code_asm::{CodeAssembler, CodeLabel};
 use std::collections::HashMap;
 
-pub struct Encoder {
-    pub options: AssemblerOptions,
+pub struct Assembler<'a> {
+    bitness: u32,
+    start_address: u64,
+    resolver: Option<&'a mut dyn SymbolResolver>,
 }
 
-impl Encoder {
-    pub fn new(options: AssemblerOptions) -> Self {
-        Self { options }
+impl<'a> Assembler<'a> {
+    pub fn new() -> Self {
+        Self {
+            bitness: 32, // Default to 32-bit
+            start_address: 0,
+            resolver: None,
+        }
     }
 
-    pub fn assemble(&mut self, source: &str) -> Result<AssembleResult, AsmError> {
+    pub fn bitness(mut self, bitness: u32) -> Self {
+        self.bitness = bitness;
+        self
+    }
+
+    pub fn start_address(mut self, addr: u64) -> Self {
+        self.start_address = addr;
+        self
+    }
+
+    pub fn with_resolver(mut self, resolver: &'a mut dyn SymbolResolver) -> Self {
+        self.resolver = Some(resolver);
+        self
+    }
+
+    pub fn assemble(self, source: &str) -> Result<AssembleResult, AsmError> {
         let mut statements = Vec::new();
 
         for (line_idx, raw_line) in source.lines().enumerate() {
             let line_num = line_idx + 1;
-
-            // Strictly strip out comments before processing
             let code_part = raw_line
                 .split(';')
                 .next()
@@ -35,13 +55,14 @@ impl Encoder {
             if code_part.is_empty() {
                 continue;
             }
-
-            let stmt = parse_statement(code_part, line_num)?;
-            statements.push(stmt);
+            statements.push(parse_statement(code_part, line_num)?);
         }
 
-        let mut asm = CodeAssembler::new(self.options.bitness).unwrap();
+        let mut asm = CodeAssembler::new(self.bitness).unwrap();
         let mut code_labels: HashMap<String, CodeLabel> = HashMap::new();
+
+        let mut dummy_resolver = NoSymbolResolver;
+        let resolver = self.resolver.unwrap_or(&mut dummy_resolver);
 
         for stmt in &statements {
             if let Some(lbl_name) = &stmt.label {
@@ -56,18 +77,12 @@ impl Encoder {
                 code_labels.insert(lbl_name.clone(), code_label);
             }
 
-            translate_instruction(
-                &mut asm,
-                stmt,
-                &mut code_labels,
-                &mut *self.options.symbol_resolver,
-            )?;
+            translate_instruction(&mut asm, stmt, &mut code_labels, resolver)?;
         }
 
         let instruction_count = asm.instructions().len();
-
         let result = asm.assemble_options(
-            self.options.start_address,
+            self.start_address,
             BlockEncoderOptions::RETURN_NEW_INSTRUCTION_OFFSETS,
         );
 
@@ -82,7 +97,7 @@ impl Encoder {
 
                 Ok(AssembleResult {
                     bytes: asm_result.inner.code_buffer,
-                    entry_point: self.options.start_address,
+                    entry_point: self.start_address,
                     labels: exported_labels,
                     instruction_count,
                 })
@@ -95,13 +110,7 @@ impl Encoder {
     }
 }
 
+/// Helper function for quick, default 32-bit assembly
 pub fn assemble(source: &str) -> Result<AssembleResult, AsmError> {
-    Encoder::new(AssemblerOptions::default()).assemble(source)
-}
-
-pub fn assemble_with_options(
-    source: &str,
-    options: AssemblerOptions,
-) -> Result<AssembleResult, AsmError> {
-    Encoder::new(options).assemble(source)
+    Assembler::new().assemble(source)
 }

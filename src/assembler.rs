@@ -21,14 +21,23 @@ impl Encoder {
 
         for (line_idx, raw_line) in source.lines().enumerate() {
             let line_num = line_idx + 1;
-            let trimmed = raw_line
+
+            // Strictly strip out comments before processing
+            let code_part = raw_line
                 .split(';')
-                .map(|s| s.trim())
-                .filter(|s| !s.is_empty());
-            for part in trimmed {
-                let stmt = parse_statement(part, line_num)?;
-                statements.push(stmt);
+                .next()
+                .unwrap_or("")
+                .split('#')
+                .next()
+                .unwrap_or("")
+                .trim();
+
+            if code_part.is_empty() {
+                continue;
             }
+
+            let stmt = parse_statement(code_part, line_num)?;
+            statements.push(stmt);
         }
 
         let mut asm = CodeAssembler::new(self.options.bitness).unwrap();
@@ -57,7 +66,6 @@ impl Encoder {
 
         let instruction_count = asm.instructions().len();
 
-        // Assemble with RETURN_NEW_INSTRUCTION_OFFSETS so we can query the label IPs
         let result = asm.assemble_options(
             self.options.start_address,
             BlockEncoderOptions::RETURN_NEW_INSTRUCTION_OFFSETS,
@@ -65,7 +73,6 @@ impl Encoder {
 
         match result {
             Ok(asm_result) => {
-                // Map the labels back to their physical resolved memory addresses
                 let mut exported_labels = HashMap::new();
                 for (name, label) in code_labels {
                     if let Ok(ip) = asm_result.label_ip(&label) {
@@ -75,7 +82,7 @@ impl Encoder {
 
                 Ok(AssembleResult {
                     bytes: asm_result.inner.code_buffer,
-                    entry_point: self.options.start_address, // Flat binary starts at the start address
+                    entry_point: self.options.start_address,
                     labels: exported_labels,
                     instruction_count,
                 })

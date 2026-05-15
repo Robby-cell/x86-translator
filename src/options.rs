@@ -17,7 +17,7 @@ impl Default for AssemblerOptions {
     fn default() -> Self {
         AssemblerOptions {
             start_address: 0,
-            bitness: 64,
+            bitness: 32,
             endian: Endian::Little,
             symbol_resolver: Box::new(NoSymbolResolver),
         }
@@ -34,7 +34,7 @@ impl Default for DisassemblerOptions {
     fn default() -> Self {
         DisassemblerOptions {
             start_address: 0,
-            bitness: 64,
+            bitness: 32,
             endian: Endian::Little,
         }
     }

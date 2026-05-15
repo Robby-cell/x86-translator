@@ -71,7 +71,12 @@ pub enum Expr {
 pub enum Operand {
     Reg(Reg),
     Imm(i64),
-    Memory { base: Reg, disp: i32 },
+    Memory {
+        base: Option<Reg>,
+        index: Option<Reg>,
+        scale: u32,
+        disp: i32,
+    },
     Label(String),
     Expr(Expr),
     StringBytes(Vec<u8>),
@@ -89,8 +94,10 @@ pub struct Statement {
 pub struct AssembleResult {
     pub bytes: Vec<u8>,
     pub entry_point: u64,
+
     /// Maps a label/function name to its exact physical byte address (IP)
-    pub labels: HashMap<String, u64>, 
+    pub labels: HashMap<String, u64>,
+
     /// Total number of physical instructions and data directives emitted
-    pub instruction_count: usize,       
+    pub instruction_count: usize,
 }

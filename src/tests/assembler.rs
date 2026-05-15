@@ -1,5 +1,7 @@
+use crate::error::AsmError;
 use crate::prelude::{AssemblerOptions, FnSymbolResolver, assemble, assemble_with_options};
 use crate::symbols;
+use crate::types::AssembleResult;
 
 mod basic;
 mod control_flow;
@@ -8,6 +10,16 @@ mod directives;
 mod memory;
 mod resolvers;
 mod stack;
+
+pub(crate) fn assemble_64_bit(code: &str) -> Result<AssembleResult, AsmError> {
+    assemble_with_options(
+        code,
+        AssemblerOptions {
+            bitness: 64,
+            ..Default::default()
+        },
+    )
+}
 
 #[test]
 fn test_metadata_output() {
@@ -22,7 +34,7 @@ fn test_metadata_output() {
         ret
     ";
 
-    let result = assemble(code).unwrap();
+    let result = assemble_64_bit(code).unwrap();
 
     // 5 total blocks (.byte, .dword, mov, push, ret)
     assert_eq!(result.instruction_count, 5);

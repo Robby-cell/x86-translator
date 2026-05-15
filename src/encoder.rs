@@ -32,8 +32,43 @@ fn to_reg64(r: Reg) -> Option<AsmRegister64> {
     }
 }
 
-fn to_mem64(base: Reg, disp: i32) -> Option<AsmMemoryOperand> {
-    Some(qword_ptr(to_reg64(base)? + disp))
+/// Helper to get the 32-bit equivalent of a 64-bit register for optimization
+fn get_sub_reg32(r: Reg) -> Option<AsmRegister32> {
+    match r {
+        Reg::Rax | Reg::Eax => Some(eax),
+        Reg::Rcx | Reg::Ecx => Some(ecx),
+        Reg::Rdx | Reg::Edx => Some(edx),
+        Reg::Rbx | Reg::Ebx => Some(ebx),
+        Reg::Rsp | Reg::Esp => Some(esp),
+        Reg::Rbp | Reg::Ebp => Some(ebp),
+        Reg::Rsi | Reg::Esi => Some(esi),
+        Reg::Rdi | Reg::Edi => Some(edi),
+        _ => None,
+    }
+}
+
+fn build_mem(
+    bitness: u32,
+    base: Option<Reg>,
+    index: Option<Reg>,
+    scale: u32,
+    disp: i32,
+) -> AsmMemoryOperand {
+    if bitness == 64 {
+        match (base.and_then(to_reg64), index.and_then(to_reg64)) {
+            (Some(b), Some(i)) => qword_ptr(b + i * scale as i32 + disp),
+            (Some(b), None) => qword_ptr(b + disp),
+            (None, Some(i)) => qword_ptr(i * scale as i32 + disp),
+            (None, None) => qword_ptr(disp as i64),
+        }
+    } else {
+        match (base.and_then(to_reg32), index.and_then(to_reg32)) {
+            (Some(b), Some(i)) => dword_ptr(b + i * scale as i32 + disp),
+            (Some(b), None) => dword_ptr(b + disp),
+            (None, Some(i)) => dword_ptr(i * scale as i32 + disp),
+            (None, None) => dword_ptr(disp as i64),
+        }
+    }
 }
 
 pub fn translate_instruction(
@@ -46,10 +81,10 @@ pub fn translate_instruction(
         line: stmt.line,
         message: e.to_string(),
     };
+    let bitness = asm.bitness();
 
     match stmt.mnemonic {
         Mnemonic::LabelOnly | Mnemonic::Global | Mnemonic::Text | Mnemonic::Data => Ok(()),
-
         Mnemonic::Byte => {
             if let Some(Operand::Expr(Expr::Number(n))) = stmt.operands.get(0) {
                 asm.db(&[*n as u8]).map_err(to_err)?;
@@ -70,10 +105,7 @@ pub fn translate_instruction(
         }
         Mnemonic::Space => {
             if let Some(Operand::Expr(Expr::Number(n))) = stmt.operands.get(0) {
-                let count = *n as usize;
-                if count > 0 {
-                    asm.db(&vec![0u8; count]).map_err(to_err)?;
-                }
+                asm.db(&vec![0u8; *n as usize]).map_err(to_err)?;
             }
             Ok(())
         }
@@ -97,47 +129,40 @@ pub fn translate_instruction(
                     } else {
                         asm.call(code_label).map_err(to_err)?;
                     }
-                    labels.insert(lbl.clone(), code_label);
                 }
                 Ok(())
             } else {
                 Err(AsmError::EncodeError {
                     line: stmt.line,
-                    message: "Branch requires label".into(),
+                    message: "Label required".into(),
                 })
             }
         }
 
         Mnemonic::Inc | Mnemonic::Dec => {
-            match &stmt.operands[0] {
-                Operand::Reg(r) => {
-                    if let Some(reg) = to_reg32(*r) {
-                        if stmt.mnemonic == Mnemonic::Inc {
-                            asm.inc(reg)
-                        } else {
-                            asm.dec(reg)
-                        }
-                        .map_err(to_err)?;
-                    } else if let Some(reg) = to_reg64(*r) {
-                        if stmt.mnemonic == Mnemonic::Inc {
-                            asm.inc(reg)
-                        } else {
-                            asm.dec(reg)
-                        }
-                        .map_err(to_err)?;
-                    } else {
-                        return Err(AsmError::EncodeError {
-                            line: stmt.line,
-                            message: "Invalid inc/dec register".into(),
-                        });
-                    }
-                }
+            let r = match &stmt.operands[0] {
+                Operand::Reg(r) => r,
                 _ => {
                     return Err(AsmError::EncodeError {
                         line: stmt.line,
-                        message: "Unsupported inc/dec operand".into(),
+                        message: "Register required".into(),
                     });
                 }
+            };
+            if let Some(reg) = to_reg32(*r) {
+                if stmt.mnemonic == Mnemonic::Inc {
+                    asm.inc(reg)
+                } else {
+                    asm.dec(reg)
+                }
+                .map_err(to_err)?;
+            } else if let Some(reg) = to_reg64(*r) {
+                if stmt.mnemonic == Mnemonic::Inc {
+                    asm.inc(reg)
+                } else {
+                    asm.dec(reg)
+                }
+                .map_err(to_err)?;
             }
             Ok(())
         }
@@ -148,21 +173,24 @@ pub fn translate_instruction(
                 Operand::Reg(r) => {
                     if let Some(reg) = to_reg64(*r) {
                         if is_push { asm.push(reg) } else { asm.pop(reg) }.map_err(to_err)?;
+                    } else if let Some(reg) = to_reg32(*r) {
+                        if is_push { asm.push(reg) } else { asm.pop(reg) }.map_err(to_err)?;
                     }
                 }
-                Operand::Imm(i) => if is_push {
-                    asm.push(*i as i32)
-                } else {
-                    return Err(AsmError::EncodeError {
-                        line: stmt.line,
-                        message: "Cannot pop immediate".into(),
-                    });
+                Operand::Imm(i) => {
+                    if is_push {
+                        asm.push(*i as i32).map_err(to_err)?;
+                    } else {
+                        return Err(AsmError::EncodeError {
+                            line: stmt.line,
+                            message: "Cannot pop immediate".into(),
+                        });
+                    }
                 }
-                .map_err(to_err)?,
                 _ => {
                     return Err(AsmError::EncodeError {
                         line: stmt.line,
-                        message: "Unsupported push/pop operand".into(),
+                        message: "Unsupported operand pairing".into(),
                     });
                 }
             }
@@ -170,108 +198,164 @@ pub fn translate_instruction(
         }
 
         Mnemonic::Lea => {
-            let o1 = &stmt.operands[0];
-            let o2 = &stmt.operands[1];
-            if let (Operand::Reg(r1), Operand::Memory { base, disp }) = (o1, o2) {
-                if let (Some(reg1), Some(mem)) = (to_reg64(*r1), to_mem64(*base, *disp)) {
-                    asm.lea(reg1, mem).map_err(to_err)?;
-                } else if let (Some(reg1), Some(mem)) = (to_reg32(*r1), to_mem64(*base, *disp)) {
-                    asm.lea(reg1, mem).map_err(to_err)?;
+            if let (
+                Operand::Reg(r1),
+                Operand::Memory {
+                    base,
+                    index,
+                    scale,
+                    disp,
+                },
+            ) = (&stmt.operands[0], &stmt.operands[1])
+            {
+                let mem = build_mem(bitness, *base, *index, *scale, *disp);
+                if let Some(reg) = to_reg64(*r1) {
+                    asm.lea(reg, mem).map_err(to_err)?;
+                } else if let Some(reg) = to_reg32(*r1) {
+                    asm.lea(reg, mem).map_err(to_err)?;
                 } else {
                     return Err(AsmError::EncodeError {
                         line: stmt.line,
-                        message: "Unsupported LEA sizes".into(),
+                        message: "Register size mismatch".into(),
                     });
                 }
+                Ok(())
             } else {
-                return Err(AsmError::EncodeError {
+                Err(AsmError::EncodeError {
                     line: stmt.line,
-                    message: "LEA requires Reg, Mem".into(),
-                });
+                    message: "Unsupported operand pairing".into(),
+                })
+            }
+        }
+
+        Mnemonic::Mov => {
+            let (o1, o2) = (&stmt.operands[0], &stmt.operands[1]);
+            match (o1, o2) {
+                (Operand::Reg(r1), Operand::Reg(r2)) => {
+                    if let (Some(reg1), Some(reg2)) = (to_reg32(*r1), to_reg32(*r2)) {
+                        asm.mov(reg1, reg2).map_err(to_err)?;
+                    } else if let (Some(reg1), Some(reg2)) = (to_reg64(*r1), to_reg64(*r2)) {
+                        asm.mov(reg1, reg2).map_err(to_err)?;
+                    } else {
+                        return Err(AsmError::EncodeError {
+                            line: stmt.line,
+                            message: "Register size mismatch".into(),
+                        });
+                    }
+                }
+                (Operand::Reg(r1), Operand::Imm(i)) => {
+                    // OPTIMIZATION: mov r64, imm32 (positive) -> mov r32, imm32 (saves 5 bytes due to zero-extension)
+                    if bitness == 64 && to_reg64(*r1).is_some() && *i >= 0 && *i <= u32::MAX as i64
+                    {
+                        let sub_reg = get_sub_reg32(*r1).unwrap();
+                        asm.mov(sub_reg, *i as i32).map_err(to_err)?;
+                    } else if let Some(reg) = to_reg64(*r1) {
+                        asm.mov(reg, *i as i64).map_err(to_err)?;
+                    } else if let Some(reg) = to_reg32(*r1) {
+                        asm.mov(reg, *i as i32).map_err(to_err)?;
+                    }
+                }
+                (
+                    Operand::Reg(r1),
+                    Operand::Memory {
+                        base,
+                        index,
+                        scale,
+                        disp,
+                    },
+                ) => {
+                    let mem = build_mem(bitness, *base, *index, *scale, *disp);
+                    if let Some(reg) = to_reg64(*r1) {
+                        asm.mov(reg, mem).map_err(to_err)?;
+                    } else if let Some(reg) = to_reg32(*r1) {
+                        asm.mov(reg, mem).map_err(to_err)?;
+                    } else {
+                        return Err(AsmError::EncodeError {
+                            line: stmt.line,
+                            message: "Register size mismatch".into(),
+                        });
+                    }
+                }
+                (
+                    Operand::Memory {
+                        base,
+                        index,
+                        scale,
+                        disp,
+                    },
+                    Operand::Reg(r2),
+                ) => {
+                    let mem = build_mem(bitness, *base, *index, *scale, *disp);
+                    if let Some(reg) = to_reg64(*r2) {
+                        asm.mov(mem, reg).map_err(to_err)?;
+                    } else if let Some(reg) = to_reg32(*r2) {
+                        asm.mov(mem, reg).map_err(to_err)?;
+                    } else {
+                        return Err(AsmError::EncodeError {
+                            line: stmt.line,
+                            message: "Register size mismatch".into(),
+                        });
+                    }
+                }
+                _ => {
+                    return Err(AsmError::EncodeError {
+                        line: stmt.line,
+                        message: "Unsupported operand pairing".into(),
+                    });
+                }
             }
             Ok(())
         }
 
-        op @ (Mnemonic::Mov | Mnemonic::Add | Mnemonic::Sub | Mnemonic::Cmp) => {
-            let o1 = &stmt.operands[0];
-            let o2 = &stmt.operands[1];
-
-            macro_rules! bin_op {
-                ($func:ident, $imm64_cast:ident) => {
-                    match (o1, o2) {
-                        (Operand::Reg(r1), Operand::Reg(r2)) => {
-                            if let (Some(reg1), Some(reg2)) = (to_reg32(*r1), to_reg32(*r2)) {
-                                asm.$func(reg1, reg2).map_err(to_err)?;
-                            } else if let (Some(reg1), Some(reg2)) = (to_reg64(*r1), to_reg64(*r2))
-                            {
-                                asm.$func(reg1, reg2).map_err(to_err)?;
-                            } else {
-                                return Err(AsmError::EncodeError {
-                                    line: stmt.line,
-                                    message: "Register size mismatch".into(),
-                                });
-                            }
+        op @ (Mnemonic::Add | Mnemonic::Sub | Mnemonic::Cmp) => {
+            let (o1, o2) = (&stmt.operands[0], &stmt.operands[1]);
+            match (o1, o2) {
+                (Operand::Reg(r1), Operand::Reg(r2)) => {
+                    if let (Some(reg1), Some(reg2)) = (to_reg32(*r1), to_reg32(*r2)) {
+                        match op {
+                            Mnemonic::Add => asm.add(reg1, reg2),
+                            Mnemonic::Sub => asm.sub(reg1, reg2),
+                            _ => asm.cmp(reg1, reg2),
                         }
-                        (Operand::Reg(r1), Operand::Imm(i)) => {
-                            if let Some(reg1) = to_reg32(*r1) {
-                                asm.$func(reg1, *i as i32).map_err(to_err)?;
-                            } else if let Some(reg1) = to_reg64(*r1) {
-                                asm.$func(reg1, *i as $imm64_cast).map_err(to_err)?;
-                            } else {
-                                return Err(AsmError::EncodeError {
-                                    line: stmt.line,
-                                    message: "Unsupported register size for immediate".into(),
-                                });
-                            }
+                        .map_err(to_err)?;
+                    } else if let (Some(reg1), Some(reg2)) = (to_reg64(*r1), to_reg64(*r2)) {
+                        match op {
+                            Mnemonic::Add => asm.add(reg1, reg2),
+                            Mnemonic::Sub => asm.sub(reg1, reg2),
+                            _ => asm.cmp(reg1, reg2),
                         }
-                        (Operand::Reg(r1), Operand::Memory { base, disp }) => {
-                            if let (Some(reg1), Some(mem)) = (to_reg64(*r1), to_mem64(*base, *disp))
-                            {
-                                asm.$func(reg1, mem).map_err(to_err)?;
-                            } else if let (Some(reg1), Some(mem)) =
-                                (to_reg32(*r1), to_mem64(*base, *disp))
-                            {
-                                asm.$func(reg1, mem).map_err(to_err)?;
-                            } else {
-                                return Err(AsmError::EncodeError {
-                                    line: stmt.line,
-                                    message: "Unsupported mem bounds".into(),
-                                });
-                            }
-                        }
-                        (Operand::Memory { base, disp }, Operand::Reg(r2)) => {
-                            if let (Some(mem), Some(reg2)) = (to_mem64(*base, *disp), to_reg64(*r2))
-                            {
-                                asm.$func(mem, reg2).map_err(to_err)?;
-                            } else if let (Some(mem), Some(reg2)) =
-                                (to_mem64(*base, *disp), to_reg32(*r2))
-                            {
-                                asm.$func(mem, reg2).map_err(to_err)?;
-                            } else {
-                                return Err(AsmError::EncodeError {
-                                    line: stmt.line,
-                                    message: "Unsupported mem bounds".into(),
-                                });
-                            }
-                        }
-                        _ => {
-                            return Err(AsmError::EncodeError {
-                                line: stmt.line,
-                                message: "Unsupported operand pairing".into(),
-                            })
-                        }
+                        .map_err(to_err)?;
+                    } else {
+                        return Err(AsmError::EncodeError {
+                            line: stmt.line,
+                            message: "Register size mismatch".into(),
+                        });
                     }
-                };
+                }
+                (Operand::Reg(r1), Operand::Imm(i)) => {
+                    if let Some(reg) = to_reg32(*r1) {
+                        match op {
+                            Mnemonic::Add => asm.add(reg, *i as i32),
+                            Mnemonic::Sub => asm.sub(reg, *i as i32),
+                            _ => asm.cmp(reg, *i as i32),
+                        }
+                        .map_err(to_err)?;
+                    } else if let Some(reg) = to_reg64(*r1) {
+                        match op {
+                            Mnemonic::Add => asm.add(reg, *i as i32),
+                            Mnemonic::Sub => asm.sub(reg, *i as i32),
+                            _ => asm.cmp(reg, *i as i32),
+                        }
+                        .map_err(to_err)?;
+                    }
+                }
+                _ => {
+                    return Err(AsmError::EncodeError {
+                        line: stmt.line,
+                        message: "Unsupported operand pairing".into(),
+                    });
+                }
             }
-
-            match op {
-                Mnemonic::Mov => bin_op!(mov, i64),
-                Mnemonic::Add => bin_op!(add, i32),
-                Mnemonic::Sub => bin_op!(sub, i32),
-                Mnemonic::Cmp => bin_op!(cmp, i32),
-                _ => unreachable!(),
-            }
-
             Ok(())
         }
         _ => Err(AsmError::UnknownMnemonic {

@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn test_push_pop_register() {
-    let bytes = assemble("push rax\npop rbx").unwrap().bytes;
+    let bytes = assemble_64_bit("push rax\npop rbx").unwrap().bytes;
     assert_eq!(bytes, vec![0x50, 0x5B]);
 }
 

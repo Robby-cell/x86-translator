@@ -1,10 +1,10 @@
-use crate::prelude::{assemble, disassemble};
+use crate::tests::{assembler::assemble_64_bit, disassembler::disassemble_64_bit};
 
 #[test]
 fn test_roundtrip_data_processing() {
     let code = "mov eax, 1\nadd rax, rbx\ncmp rcx, rdx\nret";
-    let bytes = assemble(code).unwrap().bytes;
-    let insts = disassemble(&bytes).unwrap();
+    let bytes = assemble_64_bit(code).unwrap().bytes;
+    let insts = disassemble_64_bit(&bytes).unwrap();
 
     assert_eq!(insts[0], "mov     eax,1");
     assert_eq!(insts[1], "add     rax,rbx");
@@ -15,8 +15,8 @@ fn test_roundtrip_data_processing() {
 #[test]
 fn test_roundtrip_memory_and_stack() {
     let code = "push rax\nlea rax, [rbx+0x10]\npop rax";
-    let bytes = assemble(code).unwrap().bytes;
-    let insts = disassemble(&bytes).unwrap();
+    let bytes = assemble_64_bit(code).unwrap().bytes;
+    let insts = disassemble_64_bit(&bytes).unwrap();
 
     assert_eq!(insts[0], "push    rax");
     assert_eq!(insts[1], "lea     rax,[rbx+10h]");
@@ -33,8 +33,8 @@ fn test_real_loop_example() {
                 cmp ecx, 0
                 jmp loop_start
             "#;
-    let bytes = assemble(source).unwrap().bytes;
-    let insts = disassemble(&bytes).unwrap();
+    let bytes = assemble_64_bit(source).unwrap().bytes;
+    let insts = disassemble_64_bit(&bytes).unwrap();
 
     assert_eq!(insts.len(), 5);
     assert_eq!(insts[0], "mov     ecx,5");

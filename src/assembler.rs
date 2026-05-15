@@ -2,7 +2,7 @@ use crate::encoder::translate_instruction;
 use crate::error::AsmError;
 use crate::parser::parse_statement;
 use crate::resolver::{NoSymbolResolver, SymbolResolver};
-use crate::types::AssembleResult;
+use crate::types::{AssembleResult, Mnemonic, Operand};
 
 use iced_x86::BlockEncoderOptions;
 use iced_x86::code_asm::{CodeAssembler, CodeLabel};
@@ -58,6 +58,55 @@ impl<'a> Assembler<'a> {
             statements.push(parse_statement(code_part, line_num)?);
         }
 
+        // First Pass (Label Estimate)
+        let mut estimated_labels: HashMap<String, i64> = HashMap::new();
+        let mut current_offset = 0;
+
+        for stmt in &statements {
+            if let Some(lbl) = &stmt.label {
+                estimated_labels.insert(lbl.clone(), current_offset);
+            }
+            let size = match stmt.mnemonic {
+                Mnemonic::Byte => 1,
+                Mnemonic::Short => 2,
+                Mnemonic::Word => 4,
+                Mnemonic::Ascii => {
+                    if let Some(Operand::StringBytes(b)) = stmt.operands.get(0) {
+                        b.len() as i64
+                    } else {
+                        0
+                    }
+                }
+                Mnemonic::Asciz => {
+                    if let Some(Operand::StringBytes(b)) = stmt.operands.get(0) {
+                        b.len() as i64 + 1
+                    } else {
+                        0
+                    }
+                }
+                Mnemonic::Space => {
+                    if let Some(Operand::Expr(e)) = stmt.operands.get(0) {
+                        crate::encoder::eval_expr(
+                            e,
+                            &estimated_labels,
+                            &mut crate::resolver::NoSymbolResolver,
+                            self.start_address,
+                        )
+                        .unwrap_or(0)
+                    } else {
+                        0
+                    }
+                }
+                Mnemonic::LabelOnly
+                | Mnemonic::Global
+                | Mnemonic::Text
+                | Mnemonic::Data
+                | Mnemonic::Align => 0,
+                _ => 3,
+            };
+            current_offset += size;
+        }
+
         let mut asm = CodeAssembler::new(self.bitness).unwrap();
         let mut code_labels: HashMap<String, CodeLabel> = HashMap::new();
 
@@ -76,8 +125,14 @@ impl<'a> Assembler<'a> {
                     })?;
                 code_labels.insert(lbl_name.clone(), code_label);
             }
-
-            translate_instruction(&mut asm, stmt, &mut code_labels, resolver)?;
+            translate_instruction(
+                &mut asm,
+                stmt,
+                &mut code_labels,
+                &estimated_labels,
+                resolver,
+                self.start_address,
+            )?;
         }
 
         let instruction_count = asm.instructions().len();

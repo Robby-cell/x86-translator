@@ -97,3 +97,14 @@ fn test_bitwise() {
     let bytes = assemble("test eax, eax").unwrap().bytes;
     assert_eq!(bytes, vec![0x85, 0xC0]);
 }
+
+#[test]
+fn test_small_registers() {
+    // mov al, 0x10
+    let bytes = assemble("mov al, 0x10").unwrap().bytes;
+    assert_eq!(bytes, [0xB0, 0x10]);
+
+    // mov byte ptr [ebp], al
+    let bytes = assemble("mov byte ptr [ebp], al").unwrap().bytes;
+    assert_eq!(bytes, [0x88, 0x45, 0x00]);
+}

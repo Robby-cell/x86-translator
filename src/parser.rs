@@ -20,10 +20,18 @@ fn register(input: &str) -> IResult<&str, Reg> {
         "cl" => Reg::Cl,
         "dl" => Reg::Dl,
         "bl" => Reg::Bl,
+        "ah" => Reg::Ah,
+        "ch" => Reg::Ch,
+        "dh" => Reg::Dh,
+        "bh" => Reg::Bh,
         "ax" => Reg::Ax,
         "cx" => Reg::Cx,
         "dx" => Reg::Dx,
         "bx" => Reg::Bx,
+        "sp" => Reg::Sp,
+        "bp" => Reg::Bp,
+        "si" => Reg::Si,
+        "di" => Reg::Di,
         "eax" => Reg::Eax,
         "ecx" => Reg::Ecx,
         "edx" => Reg::Edx,
@@ -106,6 +114,45 @@ fn label_name(input: &str) -> IResult<&str, String> {
         |s: &str| s.to_string(),
     )
     .parse(input)
+}
+
+fn parse_primary(input: &str) -> IResult<&str, Expr> {
+    let (input, _) = sp(input)?;
+    if let Ok((rest, _)) = char::<&str, nom::error::Error<&str>>('(').parse(input) {
+        let (rest, e) = parse_expr(rest)?;
+        let (rest, _) = sp(rest)?;
+        let (rest, _) = char::<&str, nom::error::Error<&str>>(')').parse(rest)?;
+        return Ok((rest, e));
+    }
+    if let Ok((rest, val)) = immediate(input) {
+        return Ok((rest, Expr::Number(val)));
+    }
+    if let Ok((rest, sym)) = label_name(input) {
+        return Ok((rest, Expr::Symbol(sym)));
+    }
+    Err(nom::Err::Error(nom::error::Error::new(
+        input,
+        nom::error::ErrorKind::Tag,
+    )))
+}
+
+pub(crate) fn parse_expr(input: &str) -> IResult<&str, Expr> {
+    let (mut input, mut left) = parse_primary(input)?;
+    loop {
+        let (rest, _) = sp(input)?;
+        if let Ok((rest, _)) = char::<&str, nom::error::Error<&str>>('+').parse(rest) {
+            let (rest, right) = parse_primary(rest)?;
+            left = Expr::Add(Box::new(left), Box::new(right));
+            input = rest;
+        } else if let Ok((rest, _)) = char::<&str, nom::error::Error<&str>>('-').parse(rest) {
+            let (rest, right) = parse_primary(rest)?;
+            left = Expr::Sub(Box::new(left), Box::new(right));
+            input = rest;
+        } else {
+            break;
+        }
+    }
+    Ok((input, left))
 }
 
 #[derive(Debug, Clone)]
@@ -223,8 +270,7 @@ fn operand(input: &str) -> IResult<&str, Operand> {
     alt((
         memory,
         map(register, Operand::Reg),
-        map(immediate, Operand::Imm),
-        map(label_name, Operand::Label),
+        map(parse_expr, Operand::Expr),
     ))
     .parse(input)
 }
@@ -369,7 +415,6 @@ pub fn parse_statement(input: &str, line: usize) -> Result<Statement, AsmError> 
         });
     }
 
-    // Directives
     if let Ok((dir_rest, _)) = char::<&str, nom::error::Error<&str>>('.').parse(rest) {
         let (dir_rest, dir_name) =
             take_while1::<_, _, nom::error::Error<&str>>(|c: char| c.is_alphabetic())(dir_rest)
@@ -415,9 +460,9 @@ pub fn parse_statement(input: &str, line: usize) -> Result<Statement, AsmError> 
                 });
             }
         } else if mnem != Mnemonic::Text && mnem != Mnemonic::Data {
-            let (next, op_opt) = opt(immediate).parse(curr).unwrap();
-            if let Some(imm) = op_opt {
-                operands.push(Operand::Expr(Expr::Number(imm)));
+            let (next, op_opt) = opt(parse_expr).parse(curr).unwrap();
+            if let Some(expr) = op_opt {
+                operands.push(Operand::Expr(expr));
             }
             curr = next;
         }

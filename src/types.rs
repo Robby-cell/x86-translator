@@ -6,10 +6,18 @@ pub enum Reg {
     Cl,
     Dl,
     Bl,
+    Ah,
+    Ch,
+    Dh,
+    Bh,
     Ax,
     Cx,
     Dx,
     Bx,
+    Sp,
+    Bp,
+    Si,
+    Di,
     Eax,
     Ecx,
     Edx,
@@ -118,6 +126,8 @@ pub enum Mnemonic {
 pub enum Expr {
     Number(i64),
     Symbol(String),
+    Add(Box<Expr>, Box<Expr>),
+    Sub(Box<Expr>, Box<Expr>),
 }
 
 #[derive(Debug, Clone)]

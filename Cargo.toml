@@ -6,7 +6,9 @@ edition = "2024"
 [features]
 default = ["full"]
 
-full = ["encoder", "disassembler"]
+full = ["encoder", "disassembler", "mapping"]
+
+mapping = []
 
 encoder = ["dep:nom", "iced-x86/code_asm", "iced-x86/encoder"]
 disassembler = ["iced-x86/decoder", "iced-x86/intel"]

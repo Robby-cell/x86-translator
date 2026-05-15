@@ -160,4 +160,12 @@ pub struct AssembleResult {
     pub entry_point: u64,
     pub labels: HashMap<String, u64>,
     pub instruction_count: usize,
+
+    #[cfg(feature = "mapping")]
+    pub ip_to_line: HashMap<u64, usize>,
+    #[cfg(feature = "mapping")]
+    pub line_to_ip: HashMap<usize, u64>,
+    /// Maps a label directly to the source line it was defined on
+    #[cfg(feature = "mapping")]
+    pub label_to_line: HashMap<String, usize>,
 }

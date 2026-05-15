@@ -137,22 +137,19 @@ fn parse_primary(input: &str) -> IResult<&str, Expr> {
 }
 
 pub(crate) fn parse_expr(input: &str) -> IResult<&str, Expr> {
-    let (mut input, mut left) = parse_primary(input)?;
-    loop {
-        let (rest, _) = sp(input)?;
-        if let Ok((rest, _)) = char::<&str, nom::error::Error<&str>>('+').parse(rest) {
-            let (rest, right) = parse_primary(rest)?;
-            left = Expr::Add(Box::new(left), Box::new(right));
-            input = rest;
-        } else if let Ok((rest, _)) = char::<&str, nom::error::Error<&str>>('-').parse(rest) {
-            let (rest, right) = parse_primary(rest)?;
-            left = Expr::Sub(Box::new(left), Box::new(right));
-            input = rest;
-        } else {
-            break;
-        }
-    }
-    Ok((input, left))
+    let (input, init) = parse_primary(input)?;
+    nom::multi::fold_many0(
+        (sp, alt((char('+'), char('-'))), sp, parse_primary),
+        move || init.clone(),
+        |acc, (_, op, _, val)| {
+            if op == '+' {
+                Expr::Add(Box::new(acc), Box::new(val))
+            } else {
+                Expr::Sub(Box::new(acc), Box::new(val))
+            }
+        },
+    )
+    .parse(input)
 }
 
 #[derive(Debug, Clone)]

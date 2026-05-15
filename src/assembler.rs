@@ -41,6 +41,9 @@ impl<'a> Assembler<'a> {
     pub fn assemble(mut self, source: &str) -> Result<AssembleResult, AsmError> {
         let mut statements = Vec::new();
 
+        #[cfg(feature = "mapping")]
+        let mut label_to_line = HashMap::new();
+
         for (line_idx, raw_line) in source.lines().enumerate() {
             let line_num = line_idx + 1;
             let code_part = raw_line
@@ -55,11 +58,16 @@ impl<'a> Assembler<'a> {
             if code_part.is_empty() {
                 continue;
             }
-            statements.push(parse_statement(code_part, line_num)?);
+            let stmt = parse_statement(code_part, line_num)?;
+
+            #[cfg(feature = "mapping")]
+            if let Some(lbl) = &stmt.label {
+                label_to_line.insert(lbl.clone(), line_num);
+            }
+            statements.push(stmt);
         }
 
         let mut estimated_labels: HashMap<String, i64> = HashMap::new();
-        // Pre-seed all labels with 0 so expressions can evaluate safely on pass 1
         for stmt in &statements {
             if let Some(lbl) = &stmt.label {
                 estimated_labels.insert(lbl.clone(), 0);
@@ -71,13 +79,21 @@ impl<'a> Assembler<'a> {
         let mut instruction_count = 0;
         let mut last_error = None;
 
+        #[cfg(feature = "mapping")]
+        let mut final_block_to_line = Vec::new();
+
         for _ in 0..5 {
-            // Allow up to 5 passes for instruction sizes to settle
             let mut asm = CodeAssembler::new(self.bitness).unwrap();
             let mut code_labels: HashMap<String, CodeLabel> = HashMap::new();
             let mut pass_failed = false;
 
+            #[cfg(feature = "mapping")]
+            let mut block_to_line = Vec::new();
+
             for stmt in &statements {
+                #[cfg(feature = "mapping")]
+                let start_blocks = asm.instructions().len();
+
                 if let Some(lbl_name) = &stmt.label {
                     let mut code_label = *code_labels
                         .entry(lbl_name.clone())
@@ -111,6 +127,14 @@ impl<'a> Assembler<'a> {
                     pass_failed = true;
                     break;
                 }
+
+                #[cfg(feature = "mapping")]
+                {
+                    let end_blocks = asm.instructions().len();
+                    for _ in start_blocks..end_blocks {
+                        block_to_line.push(stmt.line);
+                    }
+                }
             }
 
             if pass_failed {
@@ -136,9 +160,13 @@ impl<'a> Assembler<'a> {
 
                     final_asm_result = Some(asm_result);
                     final_code_labels = code_labels;
+                    #[cfg(feature = "mapping")]
+                    {
+                        final_block_to_line = block_to_line;
+                    }
 
                     if !changed {
-                        break; // Converged
+                        break;
                     }
                 }
                 Err(e) => {
@@ -160,11 +188,35 @@ impl<'a> Assembler<'a> {
                     }
                 }
 
+                #[cfg(feature = "mapping")]
+                let mut ip_to_line = HashMap::new();
+                #[cfg(feature = "mapping")]
+                let mut line_to_ip = HashMap::new();
+
+                #[cfg(feature = "mapping")]
+                {
+                    for (block_idx, &offset) in
+                        asm_result.inner.new_instruction_offsets.iter().enumerate()
+                    {
+                        if let Some(&line) = final_block_to_line.get(block_idx) {
+                            let ip = self.start_address + offset as u64;
+                            ip_to_line.insert(ip, line);
+                            line_to_ip.entry(line).or_insert(ip);
+                        }
+                    }
+                }
+
                 Ok(AssembleResult {
                     bytes: asm_result.inner.code_buffer,
                     entry_point: self.start_address,
                     labels: exported_labels,
                     instruction_count,
+                    #[cfg(feature = "mapping")]
+                    ip_to_line,
+                    #[cfg(feature = "mapping")]
+                    line_to_ip,
+                    #[cfg(feature = "mapping")]
+                    label_to_line,
                 })
             }
             None => Err(last_error.unwrap_or(AsmError::EncodeError {

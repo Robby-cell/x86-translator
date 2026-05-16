@@ -94,17 +94,6 @@ fn immediate(input: &str) -> IResult<&str, i64> {
     .parse(input)
 }
 
-fn unsigned_imm(input: &str) -> IResult<&str, i64> {
-    alt((
-        preceded(
-            tag_no_case("0x"),
-            map_res(hex_digit1, |h: &str| i64::from_str_radix(h, 16)),
-        ),
-        map_res(digit1, |d: &str| d.parse::<i64>()),
-    ))
-    .parse(input)
-}
-
 fn label_name(input: &str) -> IResult<&str, String> {
     map(
         recognize((
@@ -156,7 +145,7 @@ pub(crate) fn parse_expr(input: &str) -> IResult<&str, Expr> {
 enum MemTerm {
     Reg(Reg),
     Scale(Reg, u32),
-    Disp(i32),
+    Disp(Expr),
 }
 
 fn mem_term(input: &str) -> IResult<&str, MemTerm> {
@@ -172,7 +161,8 @@ fn mem_term(input: &str) -> IResult<&str, MemTerm> {
             |(r, _, _, _, s)| MemTerm::Scale(r, s.to_digit(10).unwrap()),
         ),
         map(register, MemTerm::Reg),
-        map(unsigned_imm, |i| MemTerm::Disp(i as i32)),
+        // Use parse_primary to catch BOTH labels and immediates seamlessly inside brackets
+        map(parse_primary, MemTerm::Disp),
     ))
     .parse(input)
 }
@@ -198,7 +188,7 @@ fn memory(input: &str) -> IResult<&str, Operand> {
     let mut base = None;
     let mut index = None;
     let mut scale = 1;
-    let mut disp = 0;
+    let mut disp = Expr::Number(0);
     let mut first = true;
 
     loop {
@@ -244,8 +234,14 @@ fn memory(input: &str) -> IResult<&str, Operand> {
                     )));
                 }
             }
-            MemTerm::Disp(d) => {
-                disp += if is_neg { -d } else { d };
+            MemTerm::Disp(e) => {
+                // Restored algebra for displacements
+                let term_expr = if is_neg {
+                    Expr::Sub(Box::new(Expr::Number(0)), Box::new(e))
+                } else {
+                    e
+                };
+                disp = Expr::Add(Box::new(disp), Box::new(term_expr));
             }
         }
         first = false;

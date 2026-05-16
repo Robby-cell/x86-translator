@@ -139,7 +139,7 @@ pub enum Operand {
         base: Option<Reg>,
         index: Option<Reg>,
         scale: u32,
-        disp: i32,
+        disp: Expr,
     },
     Label(String),
     Expr(Expr),

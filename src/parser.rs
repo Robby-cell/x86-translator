@@ -4,13 +4,14 @@ use nom::{
     IResult, Parser,
     branch::alt,
     bytes::complete::{tag_no_case, take_while, take_while1},
-    character::complete::{char, digit1, hex_digit1, space0},
+    character::complete::{char, digit1, hex_digit1},
     combinator::{map, map_res, opt, recognize},
     sequence::{preceded, terminated},
 };
 
 fn sp(input: &str) -> IResult<&str, &str> {
-    space0(input)
+    // Matches any Unicode whitespace (including \xA0 non-breaking spaces) and zero-width spaces
+    take_while(|c: char| c.is_whitespace() || c == '\u{200B}')(input)
 }
 
 fn register(input: &str) -> IResult<&str, Reg> {
@@ -109,8 +110,7 @@ fn parse_primary(input: &str) -> IResult<&str, Expr> {
     let (input, _) = sp(input)?;
     if let Ok((rest, _)) = char::<&str, nom::error::Error<&str>>('(').parse(input) {
         let (rest, e) = parse_expr(rest)?;
-        let (rest, _) = sp(rest)?;
-        let (rest, _) = char::<&str, nom::error::Error<&str>>(')').parse(rest)?;
+        let (rest, _) = (sp, char(')')).parse(rest)?;
         return Ok((rest, e));
     }
     if let Ok((rest, val)) = immediate(input) {
@@ -126,19 +126,27 @@ fn parse_primary(input: &str) -> IResult<&str, Expr> {
 }
 
 pub(crate) fn parse_expr(input: &str) -> IResult<&str, Expr> {
-    let (input, init) = parse_primary(input)?;
-    nom::multi::fold_many0(
-        (sp, alt((char('+'), char('-'))), sp, parse_primary),
-        move || init.clone(),
-        |acc, (_, op, _, val)| {
-            if op == '+' {
-                Expr::Add(Box::new(acc), Box::new(val))
-            } else {
-                Expr::Sub(Box::new(acc), Box::new(val))
+    let (mut input, mut left) = parse_primary(input)?;
+
+    loop {
+        let (rest, _) = sp(input)?;
+
+        if let Ok((rest2, _)) = char::<&str, nom::error::Error<&str>>('+').parse(rest) {
+            if let Ok((rest3, right)) = parse_primary(rest2) {
+                left = Expr::Add(Box::new(left), Box::new(right));
+                input = rest3;
+                continue;
             }
-        },
-    )
-    .parse(input)
+        } else if let Ok((rest2, _)) = char::<&str, nom::error::Error<&str>>('-').parse(rest) {
+            if let Ok((rest3, right)) = parse_primary(rest2) {
+                left = Expr::Sub(Box::new(left), Box::new(right));
+                input = rest3;
+                continue;
+            }
+        }
+        break;
+    }
+    Ok((input, left))
 }
 
 #[derive(Debug, Clone)]
@@ -161,20 +169,24 @@ fn mem_term(input: &str) -> IResult<&str, MemTerm> {
             |(r, _, _, _, s)| MemTerm::Scale(r, s.to_digit(10).unwrap()),
         ),
         map(register, MemTerm::Reg),
-        // Use parse_primary to catch BOTH labels and immediates seamlessly inside brackets
-        map(parse_primary, MemTerm::Disp),
+        map(parse_expr, MemTerm::Disp),
     ))
     .parse(input)
 }
 
 fn memory(input: &str) -> IResult<&str, Operand> {
+    // Remove the trailing space inside the tag strings
     let (input, size_str) = opt(alt((
-        tag_no_case("qword ptr "),
-        tag_no_case("dword ptr "),
-        tag_no_case("word ptr "),
-        tag_no_case("byte ptr "),
+        tag_no_case("qword ptr"),
+        tag_no_case("dword ptr"),
+        tag_no_case("word ptr"),
+        tag_no_case("byte ptr"),
     )))
     .parse(input)?;
+
+    // Explicitly consume any spaces/invisible characters after the pointer tag
+    let (input, _) = sp(input)?;
+
     let size = match size_str.map(|s| s.to_lowercase()) {
         Some(s) if s.starts_with("qword") => MemorySize::Qword,
         Some(s) if s.starts_with("dword") => MemorySize::Dword,
@@ -235,7 +247,6 @@ fn memory(input: &str) -> IResult<&str, Operand> {
                 }
             }
             MemTerm::Disp(e) => {
-                // Restored algebra for displacements
                 let term_expr = if is_neg {
                     Expr::Sub(Box::new(Expr::Number(0)), Box::new(e))
                 } else {

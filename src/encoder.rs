@@ -28,6 +28,30 @@ pub(crate) fn eval_expr(
     }
 }
 
+fn size_from_reg(r: Reg) -> MemorySize {
+    match r {
+        Reg::Al | Reg::Cl | Reg::Dl | Reg::Bl => MemorySize::Byte,
+        Reg::Ax | Reg::Cx | Reg::Dx | Reg::Bx => MemorySize::Word,
+        Reg::Eax
+        | Reg::Ecx
+        | Reg::Edx
+        | Reg::Ebx
+        | Reg::Esp
+        | Reg::Ebp
+        | Reg::Esi
+        | Reg::Edi
+        | Reg::R8d
+        | Reg::R9d
+        | Reg::R10d
+        | Reg::R11d
+        | Reg::R12d
+        | Reg::R13d
+        | Reg::R14d
+        | Reg::R15d => MemorySize::Dword,
+        _ => MemorySize::Qword,
+    }
+}
+
 fn to_reg8(r: Reg) -> Option<AsmRegister8> {
     match r {
         Reg::Al => Some(al),
@@ -133,9 +157,9 @@ fn build_mem(
     let mut mem = None;
     if let Some(b) = base {
         if bitness == 64 {
-            mem = Some(ptr(to_reg64(b).unwrap()));
+            mem = to_reg64(b).map(|r| ptr(r));
         } else {
-            mem = Some(ptr(to_reg32(b).unwrap()));
+            mem = to_reg32(b).map(|r| ptr(r));
         }
     }
     if let Some(i) = index {
@@ -157,7 +181,6 @@ fn build_mem(
         }
     }
 
-    // iced-x86 ptr() natively accepts the full i64 displacement
     let mut final_mem = mem.unwrap_or_else(|| ptr(disp));
 
     // If a register is involved, x86 limits displacement to 32-bit (i32)
@@ -201,13 +224,21 @@ pub fn translate_instruction(
     }
 
     macro_rules! get_mem {
-        ($size:expr, $base:expr, $index:expr, $scale:expr, $disp:expr $(,)?) => {{
+        ($size:expr, $base:expr, $index:expr, $scale:expr, $disp:expr, $infer_from_reg:expr $(,)?) => {{
             crate::encoder::eval_expr($disp, estimated_labels, resolver, start_addr)
                 .map_err(|e| AsmError::EncodeError {
                     line: stmt.line,
                     message: e,
                 })
-                .map(|d| build_mem(bitness, $size, $base, $index, $scale, d))
+                .map(|d| {
+                    let mut sz = $size;
+                    if sz == MemorySize::Unspecified {
+                        if let Some(r) = $infer_from_reg {
+                            sz = size_from_reg(r);
+                        }
+                    }
+                    build_mem(bitness, sz, $base, $index, $scale, d)
+                })
         }};
     }
 
@@ -380,7 +411,7 @@ pub fn translate_instruction(
                     scale,
                     disp,
                 } => {
-                    let mem = get_mem!(*size, *base, *index, *scale, disp)?;
+                    let mem = get_mem!(*size, *base, *index, *scale, disp, None)?;
                     if stmt.mnemonic == Mnemonic::Mul {
                         asm.mul(mem)
                     } else {
@@ -428,7 +459,7 @@ pub fn translate_instruction(
                                 disp,
                             },
                         ) => {
-                            let mem = get_mem!(*size, *base, *index, *scale, disp)?;
+                            let mem = get_mem!(*size, *base, *index, *scale, disp, Some(*r1))?;
                             if let Some(reg) = to_reg64(*r1) {
                                 asm.$func(reg, mem).map_err(to_err)?;
                             } else if let Some(reg) = to_reg32(*r1) {
@@ -487,7 +518,7 @@ pub fn translate_instruction(
                             scale,
                             disp,
                         } => {
-                            asm.$func(get_mem!(*size, *base, *index, *scale, disp)?)
+                            asm.$func(get_mem!(*size, *base, *index, *scale, disp, None)?)
                                 .map_err(to_err)?;
                         }
                         _ => {
@@ -604,7 +635,7 @@ pub fn translate_instruction(
                 },
             ) = (&stmt.operands[0], &stmt.operands[1])
             {
-                let mem = get_mem!(*size, *base, *index, *scale, disp)?;
+                let mem = get_mem!(*size, *base, *index, *scale, disp, Some(*r1))?;
                 if let Some(reg) = to_reg64(*r1) {
                     asm.lea(reg, mem).map_err(to_err)?;
                 } else if let Some(reg) = to_reg32(*r1) {
@@ -669,7 +700,7 @@ pub fn translate_instruction(
                         disp,
                     } = op
                     {
-                        let mem = get_mem!(*size, *base, *index, *scale, disp)?;
+                        let mem = get_mem!(*size, *base, *index, *scale, disp, Some(*r1))?;
                         if let Some(reg) = to_reg64(*r1) {
                             asm.mov(reg, mem).map_err(to_err)?;
                         } else if let Some(reg) = to_reg32(*r1) {
@@ -701,7 +732,7 @@ pub fn translate_instruction(
                     },
                     Operand::Reg(r2),
                 ) => {
-                    let mem = get_mem!(*size, *base, *index, *scale, disp)?;
+                    let mem = get_mem!(*size, *base, *index, *scale, disp, Some(*r2))?;
                     if let Some(reg) = to_reg64(*r2) {
                         asm.mov(mem, reg).map_err(to_err)?;
                     } else if let Some(reg) = to_reg32(*r2) {
@@ -738,6 +769,7 @@ pub fn translate_instruction(
                             *index,
                             *scale,
                             disp,
+                            None,
                         )?;
                         asm.mov(mem, i as i32).map_err(to_err)?;
                     } else {
@@ -795,7 +827,7 @@ pub fn translate_instruction(
                         disp,
                     },
                 ) => {
-                    let mem = get_mem!(*size, *base, *index, *scale, disp)?;
+                    let mem = get_mem!(*size, *base, *index, *scale, disp, Some(*r1))?;
                     if let Some(reg) = to_reg64(*r1) {
                         asm.test(mem, reg).map_err(to_err)?;
                     } else if let Some(reg) = to_reg32(*r1) {
@@ -816,7 +848,7 @@ pub fn translate_instruction(
                     },
                     Operand::Reg(r2),
                 ) => {
-                    let mem = get_mem!(*size, *base, *index, *scale, disp)?;
+                    let mem = get_mem!(*size, *base, *index, *scale, disp, Some(*r2))?;
                     if let Some(reg) = to_reg64(*r2) {
                         asm.test(mem, reg).map_err(to_err)?;
                     } else if let Some(reg) = to_reg32(*r2) {
@@ -847,6 +879,7 @@ pub fn translate_instruction(
                         *index,
                         *scale,
                         disp,
+                        None,
                     )?;
                     asm.test(mem, *i as i32).map_err(to_err)?;
                 }
@@ -907,7 +940,7 @@ pub fn translate_instruction(
                                 disp,
                             } = op
                             {
-                                let mem = get_mem!(*size, *base, *index, *scale, disp)?;
+                                let mem = get_mem!(*size, *base, *index, *scale, disp, Some(*r1))?;
                                 if let Some(reg) = to_reg64(*r1) {
                                     asm.$func(reg, mem).map_err(to_err)?;
                                 } else if let Some(reg) = to_reg32(*r1) {
@@ -934,7 +967,7 @@ pub fn translate_instruction(
                             },
                             Operand::Reg(r2),
                         ) => {
-                            let mem = get_mem!(*size, *base, *index, *scale, disp)?;
+                            let mem = get_mem!(*size, *base, *index, *scale, disp, Some(*r2))?;
                             if let Some(reg) = to_reg64(*r2) {
                                 asm.$func(mem, reg).map_err(to_err)?;
                             } else if let Some(reg) = to_reg32(*r2) {
@@ -966,6 +999,7 @@ pub fn translate_instruction(
                                     *index,
                                     *scale,
                                     disp,
+                                    None,
                                 )?;
                                 asm.$func(mem, i as i32).map_err(to_err)?;
                             } else {

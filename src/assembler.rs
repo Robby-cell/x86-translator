@@ -12,6 +12,7 @@ pub struct Assembler<'a> {
     bitness: u32,
     start_address: u64,
     resolver: Option<&'a mut dyn SymbolResolver>,
+    pic: bool,
 }
 
 impl<'a> Assembler<'a> {
@@ -20,11 +21,17 @@ impl<'a> Assembler<'a> {
             bitness: 32, // Default to 32-bit
             start_address: 0,
             resolver: None,
+            pic: false,
         }
     }
 
     pub fn bitness(mut self, bitness: u32) -> Self {
         self.bitness = bitness;
+        self
+    }
+
+    pub fn pic(mut self, pic: bool) -> Self {
+        self.pic = pic;
         self
     }
 
@@ -122,6 +129,7 @@ impl<'a> Assembler<'a> {
                     &estimated_labels,
                     resolver,
                     self.start_address,
+                    self.pic,
                 ) {
                     last_error = Some(e);
                     pass_failed = true;

@@ -4,27 +4,71 @@ use crate::types::*;
 use iced_x86::code_asm::*;
 use std::collections::HashMap;
 
+#[derive(Debug, Clone)]
+pub(crate) struct EvalResult {
+    pub absolute: i64,
+    pub unresolved_label: Option<(String, i64)>, // (label_name, offset)
+}
+
 pub(crate) fn eval_expr(
     expr: &Expr,
     labels: &HashMap<String, i64>,
     resolver: &mut dyn SymbolResolver,
     start_addr: u64,
-) -> Result<i64, String> {
+) -> Result<EvalResult, String> {
     match expr {
-        Expr::Number(n) => Ok(*n),
+        Expr::Number(n) => Ok(EvalResult {
+            absolute: *n,
+            unresolved_label: None,
+        }),
         Expr::Symbol(s) => {
             if let Some(addr) = resolver.resolve(s) {
-                Ok(addr as i64)
+                Ok(EvalResult {
+                    absolute: addr as i64,
+                    unresolved_label: None,
+                })
             } else if let Some(&offset) = labels.get(s) {
-                Ok(start_addr as i64 + offset)
+                Ok(EvalResult {
+                    absolute: start_addr as i64 + offset,
+                    unresolved_label: Some((s.clone(), 0)),
+                })
             } else {
                 Err(format!("Unknown label: {}", s))
             }
         }
-        Expr::Add(l, r) => Ok(eval_expr(l, labels, resolver, start_addr)?
-            + eval_expr(r, labels, resolver, start_addr)?),
-        Expr::Sub(l, r) => Ok(eval_expr(l, labels, resolver, start_addr)?
-            - eval_expr(r, labels, resolver, start_addr)?),
+        Expr::Add(l, r) => {
+            let left = eval_expr(l, labels, resolver, start_addr)?;
+            let right = eval_expr(r, labels, resolver, start_addr)?;
+
+            let unresolved = match (left.unresolved_label, right.unresolved_label) {
+                (Some((s, o)), None) => Some((s, o + right.absolute)),
+                (None, Some((s, o))) => Some((s, o + left.absolute)),
+                (Some(_), Some(_)) => None, // Adding two labels defaults back to absolute
+                (None, None) => None,
+            };
+
+            Ok(EvalResult {
+                absolute: left.absolute + right.absolute,
+                unresolved_label: unresolved,
+            })
+        }
+        Expr::Sub(l, r) => {
+            let left = eval_expr(l, labels, resolver, start_addr)?;
+            let right = eval_expr(r, labels, resolver, start_addr)?;
+
+            let unresolved = match (left.unresolved_label, right.unresolved_label) {
+                (Some((s, o)), None) => Some((s, o - right.absolute)),
+                (None, Some(_)) => None,
+                (Some((s1, _)), Some((s2, _))) if s1 == s2 => None, // Same label subtracted defaults back to absolute
+                (Some(_), Some(_)) => None,
+                (None, None) => None,
+            };
+
+            Ok(EvalResult {
+                absolute: left.absolute - right.absolute,
+                unresolved_label: unresolved,
+            })
+        }
     }
 }
 
@@ -147,12 +191,15 @@ fn get_sub_reg32(r: Reg) -> Option<AsmRegister32> {
 }
 
 fn build_mem(
+    asm: &mut CodeAssembler,
+    code_labels: &mut HashMap<String, CodeLabel>,
     bitness: u32,
     size: MemorySize,
     base: Option<Reg>,
     index: Option<Reg>,
     scale: u32,
-    disp: i64,
+    disp: EvalResult,
+    pic: bool,
 ) -> AsmMemoryOperand {
     let mut mem = None;
     if let Some(b) = base {
@@ -181,12 +228,27 @@ fn build_mem(
         }
     }
 
-    let mut final_mem = mem.unwrap_or_else(|| ptr(disp));
-
-    // If a register is involved, x86 limits displacement to 32-bit (i32)
-    if disp != 0 && (base.is_some() || index.is_some()) {
-        final_mem = final_mem + disp as i32;
-    }
+    let final_mem = if let Some(m) = mem {
+        // If a register is involved, x86 limits displacement to 32-bit (i32)
+        let d = disp.absolute;
+        if d != 0 { m + d as i32 } else { m }
+    } else {
+        // No base/index. Check if PIC is enabled and we have an unresolved label.
+        if pic && bitness == 64 {
+            if let Some((lbl, offset)) = disp.unresolved_label {
+                let code_label = *code_labels.entry(lbl).or_insert_with(|| asm.create_label());
+                let mut m = ptr(code_label);
+                if offset != 0 {
+                    m = m + offset as i32;
+                }
+                m
+            } else {
+                ptr(disp.absolute)
+            }
+        } else {
+            ptr(disp.absolute)
+        }
+    };
 
     match size {
         MemorySize::Byte => byte_ptr(final_mem),
@@ -204,6 +266,7 @@ pub fn translate_instruction(
     estimated_labels: &HashMap<String, i64>,
     resolver: &mut dyn SymbolResolver,
     start_addr: u64,
+    pic: bool,
 ) -> Result<(), AsmError> {
     let to_err = |e: IcedError| AsmError::EncodeError {
         line: stmt.line,
@@ -265,7 +328,9 @@ pub fn translate_instruction(
             match $op {
                 Operand::Imm(i) => Some(*i),
                 Operand::Expr(e) => {
-                    crate::encoder::eval_expr(e, estimated_labels, resolver, start_addr).ok()
+                    crate::encoder::eval_expr(e, estimated_labels, resolver, start_addr)
+                        .ok()
+                        .map(|res| res.absolute)
                 }
                 _ => None,
             }
@@ -286,7 +351,7 @@ pub fn translate_instruction(
                             sz = size_from_reg(r);
                         }
                     }
-                    build_mem(bitness, sz, $base, $index, $scale, d)
+                    build_mem(asm, labels, bitness, sz, $base, $index, $scale, d, pic)
                 })
         }};
     }

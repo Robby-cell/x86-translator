@@ -211,6 +211,55 @@ pub fn translate_instruction(
     };
     let bitness = asm.bitness();
 
+    // Clones the operands so we can mutate them to mimic MASM behavior
+    let mut operands = stmt.operands.clone();
+
+    // Only automatically dereference labels on instructions that manipulate data
+    let is_data_op = matches!(
+        stmt.mnemonic,
+        Mnemonic::Mov
+            | Mnemonic::Add
+            | Mnemonic::Adc
+            | Mnemonic::Sub
+            | Mnemonic::Sbb
+            | Mnemonic::Cmp
+            | Mnemonic::Test
+            | Mnemonic::And
+            | Mnemonic::Or
+            | Mnemonic::Xor
+            | Mnemonic::Mul
+            | Mnemonic::Div
+            | Mnemonic::Lea
+            | Mnemonic::Inc
+            | Mnemonic::Dec
+            | Mnemonic::Push
+            | Mnemonic::Pop
+            | Mnemonic::Set(_)
+            | Mnemonic::Cmov(_)
+    );
+
+    for op in &mut operands {
+        if is_data_op {
+            if let Operand::Expr(e) = op {
+                if e.has_symbol() {
+                    // Turn bare labels automatically into Memory Operands!
+                    *op = Operand::Memory {
+                        size: MemorySize::Unspecified,
+                        base: None,
+                        index: None,
+                        scale: 1,
+                        disp: e.clone(),
+                    };
+                }
+            }
+        }
+
+        if let Operand::Offset(e) = op {
+            // Strip the `offset` wrapper and treat it as a raw number/address
+            *op = Operand::Expr(e.clone());
+        }
+    }
+
     macro_rules! get_imm {
         ($op:expr) => {
             match $op {
@@ -249,7 +298,7 @@ pub fn translate_instruction(
         | Mnemonic::Data
         | Mnemonic::Align => Ok(()),
         Mnemonic::Ascii | Mnemonic::Asciz => {
-            if let Some(Operand::StringBytes(bytes)) = stmt.operands.get(0) {
+            if let Some(Operand::StringBytes(bytes)) = operands.get(0) {
                 asm.db(bytes).map_err(to_err)?;
                 if stmt.mnemonic == Mnemonic::Asciz {
                     asm.db(&[0u8]).map_err(to_err)?;
@@ -258,40 +307,25 @@ pub fn translate_instruction(
             Ok(())
         }
         Mnemonic::Byte => {
-            if let Some(i) = stmt.operands.get(0).and_then(|op| get_imm!(op)) {
+            if let Some(i) = operands.get(0).and_then(|op| get_imm!(op)) {
                 asm.db(&[i as u8]).map_err(to_err)?;
-            } else {
-                return Err(AsmError::EncodeError {
-                    line: stmt.line,
-                    message: "Byte requires an immediate".into(),
-                });
             }
             Ok(())
         }
         Mnemonic::Short => {
-            if let Some(i) = stmt.operands.get(0).and_then(|op| get_imm!(op)) {
+            if let Some(i) = operands.get(0).and_then(|op| get_imm!(op)) {
                 asm.dw(&[i as u16]).map_err(to_err)?;
-            } else {
-                return Err(AsmError::EncodeError {
-                    line: stmt.line,
-                    message: "Short requires an immediate".into(),
-                });
             }
             Ok(())
         }
         Mnemonic::Word => {
-            if let Some(i) = stmt.operands.get(0).and_then(|op| get_imm!(op)) {
+            if let Some(i) = operands.get(0).and_then(|op| get_imm!(op)) {
                 asm.dd(&[i as u32]).map_err(to_err)?;
-            } else {
-                return Err(AsmError::EncodeError {
-                    line: stmt.line,
-                    message: "Word requires an immediate".into(),
-                });
             }
             Ok(())
         }
         Mnemonic::Space => {
-            if let Some(i) = stmt.operands.get(0).and_then(|op| get_imm!(op)) {
+            if let Some(i) = operands.get(0).and_then(|op| get_imm!(op)) {
                 if i > 0 {
                     asm.db(&vec![0u8; i as usize]).map_err(to_err)?;
                 }
@@ -302,24 +336,21 @@ pub fn translate_instruction(
         Mnemonic::Ret => asm.ret().map_err(to_err),
         Mnemonic::Hlt => asm.hlt().map_err(to_err),
         Mnemonic::Int => {
-            if let Some(i) = stmt.operands.get(0).and_then(|op| get_imm!(op)) {
+            if let Some(i) = operands.get(0).and_then(|op| get_imm!(op)) {
                 asm.int(i as i32).map_err(to_err)?;
-            } else {
-                return Err(AsmError::EncodeError {
-                    line: stmt.line,
-                    message: "Int requires an immediate".into(),
-                });
             }
             Ok(())
         }
+
         Mnemonic::Jmp | Mnemonic::Jcc(_) | Mnemonic::Call => {
             let get_lbl = || -> Option<String> {
-                match stmt.operands.get(0) {
+                match operands.get(0) {
                     Some(Operand::Label(lbl)) => Some(lbl.clone()),
                     Some(Operand::Expr(Expr::Symbol(lbl))) => Some(lbl.clone()),
                     _ => None,
                 }
             };
+
             macro_rules! do_jump {
                 ($tgt:expr) => {
                     match stmt.mnemonic {
@@ -344,9 +375,10 @@ pub fn translate_instruction(
                             Condition::G => asm.jg($tgt).map_err(to_err)?,
                         },
                         _ => unreachable!(),
-                    };
+                    }
                 };
             }
+
             if let Some(lbl) = get_lbl() {
                 if let Some(addr) = resolver.resolve(&lbl) {
                     do_jump!(addr);
@@ -356,27 +388,23 @@ pub fn translate_instruction(
                         .or_insert_with(|| asm.create_label());
                     do_jump!(code_label);
                 }
-            } else if let Some(i) = get_imm!(&stmt.operands[0]) {
+            } else if let Some(i) = get_imm!(&operands[0]) {
                 do_jump!(i as u64);
-            } else {
-                return Err(AsmError::EncodeError {
-                    line: stmt.line,
-                    message: "Label or address required".into(),
-                });
             }
             Ok(())
         }
+
         Mnemonic::Mul | Mnemonic::Div => {
-            match &stmt.operands[0] {
+            match &operands[0] {
                 Operand::Reg(r) => {
-                    if let Some(reg) = to_reg32(*r) {
+                    if let Some(reg) = to_reg64(*r) {
                         if stmt.mnemonic == Mnemonic::Mul {
                             asm.mul(reg)
                         } else {
                             asm.div(reg)
                         }
                         .map_err(to_err)?;
-                    } else if let Some(reg) = to_reg64(*r) {
+                    } else if let Some(reg) = to_reg32(*r) {
                         if stmt.mnemonic == Mnemonic::Mul {
                             asm.mul(reg)
                         } else {
@@ -397,11 +425,6 @@ pub fn translate_instruction(
                             asm.div(reg)
                         }
                         .map_err(to_err)?;
-                    } else {
-                        return Err(AsmError::EncodeError {
-                            line: stmt.line,
-                            message: "Register size mismatch".into(),
-                        });
                     }
                 }
                 Operand::Memory {
@@ -422,21 +445,22 @@ pub fn translate_instruction(
                 _ => {
                     return Err(AsmError::EncodeError {
                         line: stmt.line,
-                        message: "Invalid operand for Mul/Div".into(),
+                        message: "Unsupported pairing".into(),
                     });
                 }
             }
             Ok(())
         }
+
         Mnemonic::Cmov(cond) => {
-            let (o1, o2) = (&stmt.operands[0], &stmt.operands[1]);
+            let (o1, o2) = (&operands[0], &operands[1]);
             macro_rules! cmov_op {
                 ($func:ident) => {
                     match (o1, o2) {
                         (Operand::Reg(r1), Operand::Reg(r2)) => {
-                            if let (Some(reg1), Some(reg2)) = (to_reg32(*r1), to_reg32(*r2)) {
+                            if let (Some(reg1), Some(reg2)) = (to_reg64(*r1), to_reg64(*r2)) {
                                 asm.$func(reg1, reg2).map_err(to_err)?;
-                            } else if let (Some(reg1), Some(reg2)) = (to_reg64(*r1), to_reg64(*r2))
+                            } else if let (Some(reg1), Some(reg2)) = (to_reg32(*r1), to_reg32(*r2))
                             {
                                 asm.$func(reg1, reg2).map_err(to_err)?;
                             } else if let (Some(reg1), Some(reg2)) = (to_reg16(*r1), to_reg16(*r2))
@@ -445,7 +469,7 @@ pub fn translate_instruction(
                             } else {
                                 return Err(AsmError::EncodeError {
                                     line: stmt.line,
-                                    message: "Size mismatch".into(),
+                                    message: "Register size mismatch".into(),
                                 });
                             }
                         }
@@ -466,6 +490,11 @@ pub fn translate_instruction(
                                 asm.$func(reg, mem).map_err(to_err)?;
                             } else if let Some(reg) = to_reg16(*r1) {
                                 asm.$func(reg, mem).map_err(to_err)?;
+                            } else {
+                                return Err(AsmError::EncodeError {
+                                    line: stmt.line,
+                                    message: "Invalid register".into(),
+                                });
                             }
                         }
                         _ => {
@@ -497,17 +526,18 @@ pub fn translate_instruction(
             }
             Ok(())
         }
+
         Mnemonic::Set(cond) => {
             macro_rules! set_op {
                 ($func:ident) => {
-                    match &stmt.operands[0] {
+                    match &operands[0] {
                         Operand::Reg(r) => {
                             if let Some(reg) = to_reg8(*r) {
                                 asm.$func(reg).map_err(to_err)?;
                             } else {
                                 return Err(AsmError::EncodeError {
                                     line: stmt.line,
-                                    message: "Set requires 8-bit reg".into(),
+                                    message: "Register size mismatch".into(),
                                 });
                             }
                         }
@@ -518,8 +548,8 @@ pub fn translate_instruction(
                             scale,
                             disp,
                         } => {
-                            asm.$func(get_mem!(*size, *base, *index, *scale, disp, None)?)
-                                .map_err(to_err)?;
+                            let mem = get_mem!(*size, *base, *index, *scale, disp, None)?;
+                            asm.$func(mem).map_err(to_err)?;
                         }
                         _ => {
                             return Err(AsmError::EncodeError {
@@ -550,8 +580,9 @@ pub fn translate_instruction(
             }
             Ok(())
         }
+
         Mnemonic::Inc | Mnemonic::Dec => {
-            let r = match &stmt.operands[0] {
+            let r = match &operands[0] {
                 Operand::Reg(r) => r,
                 _ => {
                     return Err(AsmError::EncodeError {
@@ -560,14 +591,14 @@ pub fn translate_instruction(
                     });
                 }
             };
-            if let Some(reg) = to_reg32(*r) {
+            if let Some(reg) = to_reg64(*r) {
                 if stmt.mnemonic == Mnemonic::Inc {
                     asm.inc(reg)
                 } else {
                     asm.dec(reg)
                 }
                 .map_err(to_err)?;
-            } else if let Some(reg) = to_reg64(*r) {
+            } else if let Some(reg) = to_reg32(*r) {
                 if stmt.mnemonic == Mnemonic::Inc {
                     asm.inc(reg)
                 } else {
@@ -591,16 +622,20 @@ pub fn translate_instruction(
             }
             Ok(())
         }
+
         Mnemonic::Push | Mnemonic::Pop => {
             let is_push = stmt.mnemonic == Mnemonic::Push;
-            match &stmt.operands[0] {
+            match &operands[0] {
                 Operand::Reg(r) => {
                     if let Some(reg) = to_reg64(*r) {
                         if is_push { asm.push(reg) } else { asm.pop(reg) }.map_err(to_err)?;
                     } else if let Some(reg) = to_reg32(*r) {
                         if is_push { asm.push(reg) } else { asm.pop(reg) }.map_err(to_err)?;
-                    } else if let Some(reg) = to_reg16(*r) {
-                        if is_push { asm.push(reg) } else { asm.pop(reg) }.map_err(to_err)?;
+                    } else {
+                        return Err(AsmError::EncodeError {
+                            line: stmt.line,
+                            message: "Invalid register".into(),
+                        });
                     }
                 }
                 op => {
@@ -623,6 +658,7 @@ pub fn translate_instruction(
             }
             Ok(())
         }
+
         Mnemonic::Lea => {
             if let (
                 Operand::Reg(r1),
@@ -633,14 +669,12 @@ pub fn translate_instruction(
                     scale,
                     disp,
                 },
-            ) = (&stmt.operands[0], &stmt.operands[1])
+            ) = (&operands[0], &operands[1])
             {
                 let mem = get_mem!(*size, *base, *index, *scale, disp, Some(*r1))?;
                 if let Some(reg) = to_reg64(*r1) {
                     asm.lea(reg, mem).map_err(to_err)?;
                 } else if let Some(reg) = to_reg32(*r1) {
-                    asm.lea(reg, mem).map_err(to_err)?;
-                } else if let Some(reg) = to_reg16(*r1) {
                     asm.lea(reg, mem).map_err(to_err)?;
                 } else {
                     return Err(AsmError::EncodeError {
@@ -656,12 +690,14 @@ pub fn translate_instruction(
                 })
             }
         }
+
         Mnemonic::Mov => {
-            match (&stmt.operands[0], &stmt.operands[1]) {
+            let (o1, o2) = (&operands[0], &operands[1]);
+            match (o1, o2) {
                 (Operand::Reg(r1), Operand::Reg(r2)) => {
-                    if let (Some(reg1), Some(reg2)) = (to_reg32(*r1), to_reg32(*r2)) {
+                    if let (Some(reg1), Some(reg2)) = (to_reg64(*r1), to_reg64(*r2)) {
                         asm.mov(reg1, reg2).map_err(to_err)?;
-                    } else if let (Some(reg1), Some(reg2)) = (to_reg64(*r1), to_reg64(*r2)) {
+                    } else if let (Some(reg1), Some(reg2)) = (to_reg32(*r1), to_reg32(*r2)) {
                         asm.mov(reg1, reg2).map_err(to_err)?;
                     } else if let (Some(reg1), Some(reg2)) = (to_reg16(*r1), to_reg16(*r2)) {
                         asm.mov(reg1, reg2).map_err(to_err)?;
@@ -681,8 +717,8 @@ pub fn translate_instruction(
                             && i >= 0
                             && i <= u32::MAX as i64
                         {
-                            asm.mov(get_sub_reg32(*r1).unwrap(), i as i32)
-                                .map_err(to_err)?;
+                            let sub_reg = get_sub_reg32(*r1).unwrap();
+                            asm.mov(sub_reg, i as i32).map_err(to_err)?;
                         } else if let Some(reg) = to_reg64(*r1) {
                             asm.mov(reg, i as i64).map_err(to_err)?;
                         } else if let Some(reg) = to_reg32(*r1) {
@@ -709,11 +745,6 @@ pub fn translate_instruction(
                             asm.mov(reg, mem).map_err(to_err)?;
                         } else if let Some(reg) = to_reg8(*r1) {
                             asm.mov(reg, mem).map_err(to_err)?;
-                        } else {
-                            return Err(AsmError::EncodeError {
-                                line: stmt.line,
-                                message: "Register size mismatch".into(),
-                            });
                         }
                     } else {
                         return Err(AsmError::EncodeError {
@@ -741,11 +772,6 @@ pub fn translate_instruction(
                         asm.mov(mem, reg).map_err(to_err)?;
                     } else if let Some(reg) = to_reg8(*r2) {
                         asm.mov(mem, reg).map_err(to_err)?;
-                    } else {
-                        return Err(AsmError::EncodeError {
-                            line: stmt.line,
-                            message: "Register size mismatch".into(),
-                        });
                     }
                 }
                 (
@@ -759,18 +785,12 @@ pub fn translate_instruction(
                     op,
                 ) => {
                     if let Some(i) = get_imm!(op) {
-                        let mem = get_mem!(
-                            if *size == MemorySize::Unspecified {
-                                MemorySize::Dword
-                            } else {
-                                *size
-                            },
-                            *base,
-                            *index,
-                            *scale,
-                            disp,
-                            None,
-                        )?;
+                        let sz = if *size == MemorySize::Unspecified {
+                            MemorySize::Dword
+                        } else {
+                            *size
+                        };
+                        let mem = get_mem!(sz, *base, *index, *scale, disp, None)?;
                         asm.mov(mem, i as i32).map_err(to_err)?;
                     } else {
                         return Err(AsmError::EncodeError {
@@ -788,6 +808,7 @@ pub fn translate_instruction(
             }
             Ok(())
         }
+
         Mnemonic::Test => {
             match (&stmt.operands[0], &stmt.operands[1]) {
                 (Operand::Reg(r1), Operand::Reg(r2)) => {
@@ -892,6 +913,7 @@ pub fn translate_instruction(
             }
             Ok(())
         }
+
         op @ (Mnemonic::Add
         | Mnemonic::Adc
         | Mnemonic::Sub
@@ -900,13 +922,14 @@ pub fn translate_instruction(
         | Mnemonic::And
         | Mnemonic::Or
         | Mnemonic::Xor) => {
+            let (o1, o2) = (&operands[0], &operands[1]);
             macro_rules! math_op {
                 ($func:ident) => {
-                    match (&stmt.operands[0], &stmt.operands[1]) {
+                    match (o1, o2) {
                         (Operand::Reg(r1), Operand::Reg(r2)) => {
-                            if let (Some(reg1), Some(reg2)) = (to_reg32(*r1), to_reg32(*r2)) {
+                            if let (Some(reg1), Some(reg2)) = (to_reg64(*r1), to_reg64(*r2)) {
                                 asm.$func(reg1, reg2).map_err(to_err)?;
-                            } else if let (Some(reg1), Some(reg2)) = (to_reg64(*r1), to_reg64(*r2))
+                            } else if let (Some(reg1), Some(reg2)) = (to_reg32(*r1), to_reg32(*r2))
                             {
                                 asm.$func(reg1, reg2).map_err(to_err)?;
                             } else if let (Some(reg1), Some(reg2)) = (to_reg16(*r1), to_reg16(*r2))
@@ -923,9 +946,9 @@ pub fn translate_instruction(
                         }
                         (Operand::Reg(r1), op) => {
                             if let Some(i) = get_imm!(op) {
-                                if let Some(reg) = to_reg32(*r1) {
+                                if let Some(reg) = to_reg64(*r1) {
                                     asm.$func(reg, i as i32).map_err(to_err)?;
-                                } else if let Some(reg) = to_reg64(*r1) {
+                                } else if let Some(reg) = to_reg32(*r1) {
                                     asm.$func(reg, i as i32).map_err(to_err)?;
                                 } else if let Some(reg) = to_reg16(*r1) {
                                     asm.$func(reg, i as i32).map_err(to_err)?;
@@ -941,20 +964,27 @@ pub fn translate_instruction(
                             } = op
                             {
                                 let mem = get_mem!(*size, *base, *index, *scale, disp, Some(*r1))?;
-                                if let Some(reg) = to_reg64(*r1) {
-                                    asm.$func(reg, mem).map_err(to_err)?;
-                                } else if let Some(reg) = to_reg32(*r1) {
-                                    asm.$func(reg, mem).map_err(to_err)?;
-                                } else if let Some(reg) = to_reg16(*r1) {
-                                    asm.$func(reg, mem).map_err(to_err)?;
-                                } else if let Some(reg) = to_reg8(*r1) {
-                                    asm.$func(reg, mem).map_err(to_err)?;
+                                if matches!(stmt.mnemonic, Mnemonic::Test) {
+                                    if let Some(reg) = to_reg64(*r1) {
+                                        asm.test(mem, reg).map_err(to_err)?;
+                                    } else if let Some(reg) = to_reg32(*r1) {
+                                        asm.test(mem, reg).map_err(to_err)?;
+                                    } else if let Some(reg) = to_reg16(*r1) {
+                                        asm.test(mem, reg).map_err(to_err)?;
+                                    } else if let Some(reg) = to_reg8(*r1) {
+                                        asm.test(mem, reg).map_err(to_err)?;
+                                    }
+                                } else {
+                                    if let Some(reg) = to_reg64(*r1) {
+                                        asm.$func(reg, mem).map_err(to_err)?;
+                                    } else if let Some(reg) = to_reg32(*r1) {
+                                        asm.$func(reg, mem).map_err(to_err)?;
+                                    } else if let Some(reg) = to_reg16(*r1) {
+                                        asm.$func(reg, mem).map_err(to_err)?;
+                                    } else if let Some(reg) = to_reg8(*r1) {
+                                        asm.$func(reg, mem).map_err(to_err)?;
+                                    }
                                 }
-                            } else {
-                                return Err(AsmError::EncodeError {
-                                    line: stmt.line,
-                                    message: "Unsupported operand pairing".into(),
-                                });
                             }
                         }
                         (
@@ -989,24 +1019,13 @@ pub fn translate_instruction(
                             op,
                         ) => {
                             if let Some(i) = get_imm!(op) {
-                                let mem = get_mem!(
-                                    if *size == MemorySize::Unspecified {
-                                        MemorySize::Dword
-                                    } else {
-                                        *size
-                                    },
-                                    *base,
-                                    *index,
-                                    *scale,
-                                    disp,
-                                    None,
-                                )?;
+                                let sz = if *size == MemorySize::Unspecified {
+                                    MemorySize::Dword
+                                } else {
+                                    *size
+                                };
+                                let mem = get_mem!(sz, *base, *index, *scale, disp, None)?;
                                 asm.$func(mem, i as i32).map_err(to_err)?;
-                            } else {
-                                return Err(AsmError::EncodeError {
-                                    line: stmt.line,
-                                    message: "Unsupported operand pairing".into(),
-                                });
                             }
                         }
                         _ => {

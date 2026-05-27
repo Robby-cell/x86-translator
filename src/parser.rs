@@ -272,6 +272,10 @@ fn memory(input: &str) -> IResult<&str, Operand> {
 
 fn operand(input: &str) -> IResult<&str, Operand> {
     alt((
+        map(
+            preceded((tag_no_case("offset"), sp), parse_expr),
+            Operand::Offset,
+        ),
         memory,
         map(register, Operand::Reg),
         map(parse_expr, Operand::Expr),

@@ -130,6 +130,16 @@ pub enum Expr {
     Sub(Box<Expr>, Box<Expr>),
 }
 
+impl Expr {
+    pub fn has_symbol(&self) -> bool {
+        match self {
+            Expr::Number(_) => false,
+            Expr::Symbol(_) => true,
+            Expr::Add(l, r) | Expr::Sub(l, r) => l.has_symbol() || r.has_symbol(),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum Operand {
     Reg(Reg),
@@ -143,6 +153,7 @@ pub enum Operand {
     },
     Label(String),
     Expr(Expr),
+    Offset(Expr),
     StringBytes(Vec<u8>),
 }
 

@@ -400,9 +400,156 @@ pub fn translate_instruction(
         Mnemonic::Nop => asm.nop().map_err(to_err),
         Mnemonic::Ret => asm.ret().map_err(to_err),
         Mnemonic::Hlt => asm.hlt().map_err(to_err),
+
+        Mnemonic::Cld => asm.cld().map_err(to_err),
+        Mnemonic::Std => asm.std().map_err(to_err),
+        Mnemonic::Lodsb => asm.lodsb().map_err(to_err),
+        Mnemonic::Lodsw => asm.lodsw().map_err(to_err),
+        Mnemonic::Lodsd => asm.lodsd().map_err(to_err),
+        Mnemonic::Lodsq => asm.lodsq().map_err(to_err),
+        Mnemonic::Stosb => asm.stosb().map_err(to_err),
+        Mnemonic::Stosw => asm.stosw().map_err(to_err),
+        Mnemonic::Stosd => asm.stosd().map_err(to_err),
+        Mnemonic::Stosq => asm.stosq().map_err(to_err),
+        Mnemonic::Movsb => asm.movsb().map_err(to_err),
+        Mnemonic::Movsw => asm.movsw().map_err(to_err),
+        Mnemonic::Movsd => asm.movsd().map_err(to_err),
+        Mnemonic::Movsq => asm.movsq().map_err(to_err),
+        Mnemonic::Scasb => asm.scasb().map_err(to_err),
+        Mnemonic::Scasw => asm.scasw().map_err(to_err),
+        Mnemonic::Scasd => asm.scasd().map_err(to_err),
+        Mnemonic::Scasq => asm.scasq().map_err(to_err),
+        Mnemonic::Cmpsb => asm.cmpsb().map_err(to_err),
+        Mnemonic::Cmpsw => asm.cmpsw().map_err(to_err),
+        Mnemonic::Cmpsd => asm.cmpsd().map_err(to_err),
+        Mnemonic::Cmpsq => asm.cmpsq().map_err(to_err),
+        Mnemonic::Outsb => asm.outsb().map_err(to_err),
+        Mnemonic::Outsw => asm.outsw().map_err(to_err),
+        Mnemonic::Outsd => asm.outsd().map_err(to_err),
+        Mnemonic::Insb => asm.insb().map_err(to_err),
+        Mnemonic::Insw => asm.insw().map_err(to_err),
+        Mnemonic::Insd => asm.insd().map_err(to_err),
+        Mnemonic::Cbw => asm.cbw().map_err(to_err),
+        Mnemonic::Cwde => asm.cwde().map_err(to_err),
+        Mnemonic::Cdqe => asm.cdqe().map_err(to_err),
+        Mnemonic::Cwd => asm.cwd().map_err(to_err),
+        Mnemonic::Cdq => asm.cdq().map_err(to_err),
+        Mnemonic::Cqo => asm.cqo().map_err(to_err),
+        Mnemonic::Syscall => asm.syscall().map_err(to_err),
+        Mnemonic::Sysret => asm.sysret().map_err(to_err),
+        Mnemonic::Sysenter => asm.sysenter().map_err(to_err),
+        Mnemonic::Sysexit => asm.sysexit().map_err(to_err),
+        Mnemonic::Leave => asm.leave().map_err(to_err),
+        Mnemonic::Int3 => asm.int3().map_err(to_err),
         Mnemonic::Int => {
             if let Some(i) = operands.get(0).and_then(|op| get_imm!(op)) {
                 asm.int(i as i32).map_err(to_err)?;
+            }
+            Ok(())
+        }
+        Mnemonic::In => {
+            if operands.len() != 2 {
+                return Err(AsmError::EncodeError {
+                    line: stmt.line,
+                    message: "IN requires 2 operands".into(),
+                });
+            }
+            let (o1, o2) = (&operands[0], &operands[1]);
+            match (o1, o2) {
+                (Operand::Reg(r1), Operand::Reg(r2)) => {
+                    if let (Some(reg1), Some(reg2)) = (to_reg8(*r1), to_reg16(*r2)) {
+                        asm.in_(reg1, reg2).map_err(to_err)?;
+                    } else if let (Some(reg1), Some(reg2)) = (to_reg16(*r1), to_reg16(*r2)) {
+                        asm.in_(reg1, reg2).map_err(to_err)?;
+                    } else if let (Some(reg1), Some(reg2)) = (to_reg32(*r1), to_reg16(*r2)) {
+                        asm.in_(reg1, reg2).map_err(to_err)?;
+                    } else {
+                        return Err(AsmError::EncodeError {
+                            line: stmt.line,
+                            message: "Register size mismatch or invalid registers for IN".into(),
+                        });
+                    }
+                }
+                (Operand::Reg(r1), op2) => {
+                    if let Some(imm) = get_imm!(op2) {
+                        if let Some(reg1) = to_reg8(*r1) {
+                            asm.in_(reg1, imm as i32).map_err(to_err)?;
+                        } else if let Some(reg1) = to_reg16(*r1) {
+                            asm.in_(reg1, imm as i32).map_err(to_err)?;
+                        } else if let Some(reg1) = to_reg32(*r1) {
+                            asm.in_(reg1, imm as i32).map_err(to_err)?;
+                        } else {
+                            return Err(AsmError::EncodeError {
+                                line: stmt.line,
+                                message: "Invalid destination register for IN".into(),
+                            });
+                        }
+                    } else {
+                        return Err(AsmError::EncodeError {
+                            line: stmt.line,
+                            message: "Invalid operand for IN".into(),
+                        });
+                    }
+                }
+                _ => {
+                    return Err(AsmError::EncodeError {
+                        line: stmt.line,
+                        message: "Unsupported operand pairing for IN".into(),
+                    });
+                }
+            }
+            Ok(())
+        }
+        Mnemonic::Out => {
+            if operands.len() != 2 {
+                return Err(AsmError::EncodeError {
+                    line: stmt.line,
+                    message: "OUT requires 2 operands".into(),
+                });
+            }
+            let (o1, o2) = (&operands[0], &operands[1]);
+            match (o1, o2) {
+                (Operand::Reg(r1), Operand::Reg(r2)) => {
+                    if let (Some(reg1), Some(reg2)) = (to_reg16(*r1), to_reg8(*r2)) {
+                        asm.out(reg1, reg2).map_err(to_err)?;
+                    } else if let (Some(reg1), Some(reg2)) = (to_reg16(*r1), to_reg16(*r2)) {
+                        asm.out(reg1, reg2).map_err(to_err)?;
+                    } else if let (Some(reg1), Some(reg2)) = (to_reg16(*r1), to_reg32(*r2)) {
+                        asm.out(reg1, reg2).map_err(to_err)?;
+                    } else {
+                        return Err(AsmError::EncodeError {
+                            line: stmt.line,
+                            message: "Register size mismatch or invalid registers for OUT".into(),
+                        });
+                    }
+                }
+                (op1, Operand::Reg(r2)) => {
+                    if let Some(imm) = get_imm!(op1) {
+                        if let Some(reg2) = to_reg8(*r2) {
+                            asm.out(imm as i32, reg2).map_err(to_err)?;
+                        } else if let Some(reg2) = to_reg16(*r2) {
+                            asm.out(imm as i32, reg2).map_err(to_err)?;
+                        } else if let Some(reg2) = to_reg32(*r2) {
+                            asm.out(imm as i32, reg2).map_err(to_err)?;
+                        } else {
+                            return Err(AsmError::EncodeError {
+                                line: stmt.line,
+                                message: "Invalid source register for OUT".into(),
+                            });
+                        }
+                    } else {
+                        return Err(AsmError::EncodeError {
+                            line: stmt.line,
+                            message: "Invalid operand for OUT".into(),
+                        });
+                    }
+                }
+                _ => {
+                    return Err(AsmError::EncodeError {
+                        line: stmt.line,
+                        message: "Unsupported operand pairing for OUT".into(),
+                    });
+                }
             }
             Ok(())
         }

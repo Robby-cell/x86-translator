@@ -7,6 +7,12 @@ pub struct Disassembler {
     pub start_address: u64,
 }
 
+impl Default for Disassembler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Disassembler {
     pub fn new() -> Self {
         Self {

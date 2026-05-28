@@ -12,12 +12,12 @@ fn test_conditional_jumps() {
 fn test_cmov() {
     // cmove rax, rbx
     let bytes = assemble_64_bit("cmove rax, rbx").unwrap().bytes;
-    assert_eq!(bytes, vec![0x48, 0x0F, 0x44, 0xC3]);
+    assert_eq!(bytes, [0x48, 0x0F, 0x44, 0xC3]);
 }
 
 #[test]
 fn test_setcc() {
     // sete al
     let bytes = assemble("sete al").unwrap().bytes;
-    assert_eq!(bytes, vec![0x0F, 0x94, 0xC0]);
+    assert_eq!(bytes, [0x0F, 0x94, 0xC0]);
 }

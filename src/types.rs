@@ -162,6 +162,12 @@ pub enum Mnemonic {
     Int3,
     In,
     Out,
+    Loop,
+    Loope,
+    Loopne,
+    Jcxz,
+    Jecxz,
+    Jrcxz,
 }
 
 #[derive(Debug, Clone)]

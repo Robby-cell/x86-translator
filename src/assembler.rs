@@ -15,6 +15,12 @@ pub struct Assembler<'a> {
     pic: bool,
 }
 
+impl<'a> Default for Assembler<'a> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<'a> Assembler<'a> {
     pub fn new() -> Self {
         Self {

@@ -9,7 +9,7 @@ fn test_hashmap_resolver() {
         .assemble("jmp external_jmp")
         .unwrap()
         .bytes;
-    assert_eq!(bytes, vec![0xE9, 0xFB, 0x0F, 0x00, 0x00]);
+    assert_eq!(bytes, [0xE9, 0xFB, 0x0F, 0x00, 0x00]);
 }
 
 #[test]

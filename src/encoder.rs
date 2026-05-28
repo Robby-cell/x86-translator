@@ -204,9 +204,9 @@ fn build_mem(
     let mut mem = None;
     if let Some(b) = base {
         if bitness == 64 {
-            mem = to_reg64(b).map(|r| ptr(r));
+            mem = to_reg64(b).map(ptr);
         } else {
-            mem = to_reg32(b).map(|r| ptr(r));
+            mem = to_reg32(b).map(ptr);
         }
     }
     if let Some(i) = index {
@@ -302,19 +302,18 @@ pub fn translate_instruction(
     );
 
     for op in &mut operands {
-        if is_data_op {
-            if let Operand::Expr(e) = op {
-                if e.has_symbol() {
-                    // Turn bare labels automatically into Memory Operands!
-                    *op = Operand::Memory {
-                        size: MemorySize::Unspecified,
-                        base: None,
-                        index: None,
-                        scale: 1,
-                        disp: e.clone(),
-                    };
-                }
-            }
+        if is_data_op
+            && let Operand::Expr(e) = op
+            && e.has_symbol()
+        {
+            // Turn bare labels automatically into Memory Operands!
+            *op = Operand::Memory {
+                size: MemorySize::Unspecified,
+                base: None,
+                index: None,
+                scale: 1,
+                disp: e.clone(),
+            };
         }
 
         if let Operand::Offset(e) = op {
@@ -363,7 +362,7 @@ pub fn translate_instruction(
         | Mnemonic::Data
         | Mnemonic::Align => Ok(()),
         Mnemonic::Ascii | Mnemonic::Asciz => {
-            if let Some(Operand::StringBytes(bytes)) = operands.get(0) {
+            if let Some(Operand::StringBytes(bytes)) = operands.first() {
                 asm.db(bytes).map_err(to_err)?;
                 if stmt.mnemonic == Mnemonic::Asciz {
                     asm.db(&[0u8]).map_err(to_err)?;
@@ -372,28 +371,28 @@ pub fn translate_instruction(
             Ok(())
         }
         Mnemonic::Byte => {
-            if let Some(i) = operands.get(0).and_then(|op| get_imm!(op)) {
+            if let Some(i) = operands.first().and_then(|op| get_imm!(op)) {
                 asm.db(&[i as u8]).map_err(to_err)?;
             }
             Ok(())
         }
         Mnemonic::Short => {
-            if let Some(i) = operands.get(0).and_then(|op| get_imm!(op)) {
+            if let Some(i) = operands.first().and_then(|op| get_imm!(op)) {
                 asm.dw(&[i as u16]).map_err(to_err)?;
             }
             Ok(())
         }
         Mnemonic::Word => {
-            if let Some(i) = operands.get(0).and_then(|op| get_imm!(op)) {
+            if let Some(i) = operands.first().and_then(|op| get_imm!(op)) {
                 asm.dd(&[i as u32]).map_err(to_err)?;
             }
             Ok(())
         }
         Mnemonic::Space => {
-            if let Some(i) = operands.get(0).and_then(|op| get_imm!(op)) {
-                if i > 0 {
-                    asm.db(&vec![0u8; i as usize]).map_err(to_err)?;
-                }
+            if let Some(i) = operands.first().and_then(|op| get_imm!(op))
+                && i > 0
+            {
+                asm.db(&vec![0u8; i as usize]).map_err(to_err)?;
             }
             Ok(())
         }
@@ -442,7 +441,7 @@ pub fn translate_instruction(
         Mnemonic::Leave => asm.leave().map_err(to_err),
         Mnemonic::Int3 => asm.int3().map_err(to_err),
         Mnemonic::Int => {
-            if let Some(i) = operands.get(0).and_then(|op| get_imm!(op)) {
+            if let Some(i) = operands.first().and_then(|op| get_imm!(op)) {
                 asm.int(i as i32).map_err(to_err)?;
             }
             Ok(())
@@ -554,9 +553,17 @@ pub fn translate_instruction(
             Ok(())
         }
 
-        Mnemonic::Jmp | Mnemonic::Jcc(_) | Mnemonic::Call => {
+        Mnemonic::Jmp
+        | Mnemonic::Jcc(_)
+        | Mnemonic::Call
+        | Mnemonic::Loop
+        | Mnemonic::Loope
+        | Mnemonic::Loopne
+        | Mnemonic::Jcxz
+        | Mnemonic::Jecxz
+        | Mnemonic::Jrcxz => {
             let get_lbl = || -> Option<String> {
-                match operands.get(0) {
+                match operands.first() {
                     Some(Operand::Label(lbl)) => Some(lbl.clone()),
                     Some(Operand::Expr(Expr::Symbol(lbl))) => Some(lbl.clone()),
                     _ => None,
@@ -586,6 +593,12 @@ pub fn translate_instruction(
                             Condition::Le => asm.jle($tgt).map_err(to_err)?,
                             Condition::G => asm.jg($tgt).map_err(to_err)?,
                         },
+                        Mnemonic::Loop => asm.loop_($tgt).map_err(to_err)?,
+                        Mnemonic::Loope => asm.loope($tgt).map_err(to_err)?,
+                        Mnemonic::Loopne => asm.loopne($tgt).map_err(to_err)?,
+                        Mnemonic::Jcxz => asm.jcxz($tgt).map_err(to_err)?,
+                        Mnemonic::Jecxz => asm.jecxz($tgt).map_err(to_err)?,
+                        Mnemonic::Jrcxz => asm.jrcxz($tgt).map_err(to_err)?,
                         _ => unreachable!(),
                     }
                 };
@@ -932,7 +945,7 @@ pub fn translate_instruction(
                             let sub_reg = get_sub_reg32(*r1).unwrap();
                             asm.mov(sub_reg, i as i32).map_err(to_err)?;
                         } else if let Some(reg) = to_reg64(*r1) {
-                            asm.mov(reg, i as i64).map_err(to_err)?;
+                            asm.mov(reg, i).map_err(to_err)?;
                         } else if let Some(reg) = to_reg32(*r1) {
                             asm.mov(reg, i as i32).map_err(to_err)?;
                         } else if let Some(reg) = to_reg16(*r1) {

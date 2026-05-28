@@ -137,12 +137,12 @@ pub(crate) fn parse_expr(input: &str) -> IResult<&str, Expr> {
                 input = rest3;
                 continue;
             }
-        } else if let Ok((rest2, _)) = char::<&str, nom::error::Error<&str>>('-').parse(rest) {
-            if let Ok((rest3, right)) = parse_primary(rest2) {
-                left = Expr::Sub(Box::new(left), Box::new(right));
-                input = rest3;
-                continue;
-            }
+        } else if let Ok((rest2, _)) = char::<&str, nom::error::Error<&str>>('-').parse(rest)
+            && let Ok((rest3, right)) = parse_primary(rest2)
+        {
+            left = Expr::Sub(Box::new(left), Box::new(right));
+            input = rest3;
+            continue;
         }
         break;
     }
@@ -353,15 +353,15 @@ fn mnemonic_parser(input: &str) -> IResult<&str, Mnemonic> {
             return Ok((rest, Mnemonic::Jcc(cond)));
         }
     }
-    if let Some(cond_str) = lower.strip_prefix("cmov") {
-        if let Some(cond) = parse_cond(cond_str) {
-            return Ok((rest, Mnemonic::Cmov(cond)));
-        }
+    if let Some(cond_str) = lower.strip_prefix("cmov")
+        && let Some(cond) = parse_cond(cond_str)
+    {
+        return Ok((rest, Mnemonic::Cmov(cond)));
     }
-    if let Some(cond_str) = lower.strip_prefix("set") {
-        if let Some(cond) = parse_cond(cond_str) {
-            return Ok((rest, Mnemonic::Set(cond)));
-        }
+    if let Some(cond_str) = lower.strip_prefix("set")
+        && let Some(cond) = parse_cond(cond_str)
+    {
+        return Ok((rest, Mnemonic::Set(cond)));
     }
 
     let mnem = match lower.as_str() {
@@ -429,6 +429,12 @@ fn mnemonic_parser(input: &str) -> IResult<&str, Mnemonic> {
         "int3" => Mnemonic::Int3,
         "in" | "inb" | "inw" | "ind" => Mnemonic::In,
         "out" | "outb" | "outw" | "outd" => Mnemonic::Out,
+        "loop" => Mnemonic::Loop,
+        "loope" | "loopz" => Mnemonic::Loope,
+        "loopne" | "loopnz" => Mnemonic::Loopne,
+        "jcxz" => Mnemonic::Jcxz,
+        "jecxz" => Mnemonic::Jecxz,
+        "jrcxz" => Mnemonic::Jrcxz,
         _ => {
             return Err(nom::Err::Error(nom::error::Error::new(
                 input,
